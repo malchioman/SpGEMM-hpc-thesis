@@ -347,6 +347,10 @@ std::unordered_map<int, std::vector<double>> exchangeRemoteDenseRows(
     }
 
     std::vector<int> incomingCounts(ranks, 0);
+    std::vector<int> outgoingCounts(ranks, 0);
+    for (int peer = 0; peer < ranks; ++peer) {
+        outgoingCounts[peer] = static_cast<int>(requestedRows[peer].size());
+    }
     std::vector<MPI_Request> requests;
     requests.reserve(2 * (ranks - 1));
     for (int peer = 0; peer < ranks; ++peer) {
@@ -357,7 +361,7 @@ std::unordered_map<int, std::vector<double>> exchangeRemoteDenseRows(
         checkMpi(MPI_Irecv(&incomingCounts[peer], 1, MPI_INT, peer, kRequestCountTag, communicator,
                            &request), "MPI_Irecv(request count)", communicator);
         requests.push_back(request);
-        checkMpi(MPI_Isend(requestedRows[peer].data(), 1, MPI_INT, peer, kRequestCountTag, communicator,
+        checkMpi(MPI_Isend(&outgoingCounts[peer], 1, MPI_INT, peer, kRequestCountTag, communicator,
                            &request), "MPI_Isend(request count)", communicator);
         requests.push_back(request);
     }
