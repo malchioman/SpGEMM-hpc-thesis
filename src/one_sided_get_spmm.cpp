@@ -13,9 +13,29 @@
 
 namespace {
 
-constexpr char kProgramName[] = "spmm_two_sided";
-constexpr char kImplementation[] = "mpi_openmp_two_sided";
-constexpr char kDefaultResultsPath[] = "results/two_sided/benchmarks.tsv";
+constexpr char kProgramName[] = "spmm_one_sided_get";
+constexpr char kImplementation[] = "mpi_openmp_one_sided_get";
+constexpr char kDefaultResultsPath[] = "results/one_sided_get/benchmarks.tsv";
+
+void fetchRemoteDenseRows(const std::vector<RowBlock>& denseBlocks, int denseCols,
+                          MPI_Win denseWindow, RemoteDenseRows& remoteDenseRows,
+                          MPI_Comm communicator) {
+    for (int peer = 0; peer < static_cast<int>(denseBlocks.size()); ++peer) {
+        const int peerOffset = remoteDenseRows.plan.peerOffsets[peer];
+        const auto& rows = remoteDenseRows.plan.rowsByPeer[peer];
+        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+            const int globalRow = rows[index];
+            const MPI_Aint targetOffset =
+                static_cast<MPI_Aint>(globalRow - denseBlocks[peer].firstRow) * denseCols;
+            double* destination = remoteDenseRows.values.data() +
+                                  static_cast<std::size_t>(peerOffset + index) * denseCols;
+            checkMpi(MPI_Get(destination, denseCols, MPI_DOUBLE, peer, targetOffset, denseCols,
+                             MPI_DOUBLE, denseWindow),
+                     "MPI_Get(dense row)", communicator);
+        }
+    }
+    checkMpi(MPI_Win_flush_all(denseWindow), "MPI_Win_flush_all", communicator);
+}
 
 }  // namespace
 
@@ -35,6 +55,8 @@ int main(int argc, char** argv) {
         fail("MPI implementation does not provide MPI_THREAD_FUNNELED", communicator);
     }
 
+    MPI_Win denseWindow = MPI_WIN_NULL;
+    bool denseWindowLocked = false;
     try {
         const Options options = parseOptions(argc, argv, kProgramName, kDefaultResultsPath);
         omp_set_dynamic(0);
@@ -68,19 +90,32 @@ int main(int argc, char** argv) {
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
-        RemoteDenseRows remoteDenseRows = exchangeRemoteDenseRowsTwoSided(
-            localMatrix, denseBlocks, denseBlocks[rank], ownedDenseRows, options.denseCols, rank,
-            ranks, communicator);
+        RemoteDenseRows remoteDenseRows =
+            makeRemoteDenseRows(buildRemoteRowPlan(localMatrix, denseBlocks, rank, communicator),
+                                options.denseCols);
+        checkMpi(
+            MPI_Win_create(ownedDenseRows.empty() ? nullptr : ownedDenseRows.data(),
+                           static_cast<MPI_Aint>(ownedDenseRows.size()) * sizeof(double),
+                           sizeof(double), MPI_INFO_NULL, communicator, &denseWindow),
+            "MPI_Win_create", communicator);
+        checkMpi(MPI_Win_lock_all(MPI_MODE_NOCHECK, denseWindow), "MPI_Win_lock_all", communicator);
+        denseWindowLocked = true;
+        // Publish local stores before remote ranks fetch from the exposed rows of B.
+        checkMpi(MPI_Win_sync(denseWindow), "MPI_Win_sync", communicator);
+        checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+        fetchRemoteDenseRows(denseBlocks, options.denseCols, denseWindow, remoteDenseRows, communicator);
         const double haloSetupSeconds = maxElapsed(haloSetupStart, communicator);
 
         std::vector<double> localResult(static_cast<std::size_t>(localMatrix.rows) * options.denseCols);
         for (int iteration = 0; iteration < options.warmup; ++iteration) {
+            checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
             ++denseEpoch;
             fillOwnedDenseRows(denseBlocks[rank], options.denseCols, denseEpoch, ownedDenseRows);
-            remoteDenseRows = exchangeRemoteDenseRowsTwoSided(localMatrix, denseBlocks,
-                                                              denseBlocks[rank], ownedDenseRows,
-                                                              options.denseCols, rank, ranks,
-                                                              communicator);
+            // Prevent the next get epoch from observing stale private copies of the window.
+            checkMpi(MPI_Win_sync(denseWindow), "MPI_Win_sync", communicator);
+            checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+            fetchRemoteDenseRows(denseBlocks, options.denseCols, denseWindow, remoteDenseRows,
+                                 communicator);
             spmm(localMatrix, denseBlocks[rank], ownedDenseRows, remoteDenseRows, options.denseCols,
                  localResult);
         }
@@ -96,16 +131,16 @@ int main(int argc, char** argv) {
             endToEndSamples.reserve(sampleCount);
         }
 
-        checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         for (int trial = 0; trial < options.trials; ++trial) {
             for (int repeat = 0; repeat < options.repeats; ++repeat) {
+                checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
                 ++denseEpoch;
                 fillOwnedDenseRows(denseBlocks[rank], options.denseCols, denseEpoch, ownedDenseRows);
-                checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+                checkMpi(MPI_Win_sync(denseWindow), "MPI_Win_sync", communicator);
                 const double start = MPI_Wtime();
-                remoteDenseRows = exchangeRemoteDenseRowsTwoSided(
-                    localMatrix, denseBlocks, denseBlocks[rank], ownedDenseRows, options.denseCols,
-                    rank, ranks, communicator);
+                checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+                fetchRemoteDenseRows(denseBlocks, options.denseCols, denseWindow, remoteDenseRows,
+                                     communicator);
                 const double exchangeEnd = MPI_Wtime();
                 spmm(localMatrix, denseBlocks[rank], ownedDenseRows, remoteDenseRows, options.denseCols,
                      localResult);
@@ -146,9 +181,21 @@ int main(int argc, char** argv) {
                                   endToEndP90Seconds, gatherSeconds, computeGflops, error);
         }
     } catch (const std::exception& error) {
+        if (denseWindow != MPI_WIN_NULL) {
+            if (denseWindowLocked) {
+                MPI_Win_unlock_all(denseWindow);
+            }
+            MPI_Win_free(&denseWindow);
+        }
         fail(error.what(), communicator);
     }
 
+    if (denseWindow != MPI_WIN_NULL) {
+        if (denseWindowLocked) {
+            checkMpi(MPI_Win_unlock_all(denseWindow), "MPI_Win_unlock_all", communicator);
+        }
+        checkMpi(MPI_Win_free(&denseWindow), "MPI_Win_free", communicator);
+    }
     checkMpi(MPI_Finalize(), "MPI_Finalize", communicator);
     return EXIT_SUCCESS;
 }

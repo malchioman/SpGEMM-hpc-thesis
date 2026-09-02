@@ -1,31 +1,49 @@
-# Sources for the two-sided baseline
+# Sources for the distributed SpMM implementations
 
-This document records the sources used for the initial `MPI + OpenMP` two-sided
-baseline. Standards, implementation documentation, and scientific literature
-are deliberately kept distinct.
+This document records the sources used for the `MPI + OpenMP` two-sided baseline
+and for the `MPI` one-sided/RMA variants. Standards, implementation
+documentation, and scientific literature are deliberately kept distinct.
 
 ## Standards and official documentation
 
-- [MPI: A Message-Passing Interface Standard, Version 4.1](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report.pdf), MPI Forum, 2023. Normative source for point-to-point communication, nonblocking operations, and MPI thread-support levels.
-- [Open MPI MPI_Init_thread documentation](https://docs.open-mpi.org/en/v5.0.x/man-openmpi/man3/MPI_Init_thread.3.html). Operational reference for requesting and checking `MPI_THREAD_FUNNELED`; the [Open MPI MPI API manual pages](https://docs.open-mpi.org/en/main/man-openmpi/man3/index.html) cover `MPI_Isend`, `MPI_Irecv`, and `MPI_Waitall`.
+- [MPI: A Message-Passing Interface Standard, Version 4.1](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report.pdf), MPI Forum, 2023. Normative source for point-to-point communication, one-sided communication, passive-target synchronization, the RMA memory model, and `MPI_THREAD_FUNNELED`.
+- MPI 4.1 HTML sections for the specific RMA mechanisms used here:
+  [Window Creation](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node309.htm),
+  [Put](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node317.htm),
+  [Get](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node318.htm),
+  [Memory Model](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node326.htm),
+  [Lock](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node330.htm), and
+  [Flush and Sync](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node331.htm).
+- Open MPI API manual pages for the exact RMA calls exercised by the one-sided implementations:
+  [MPI_Win_create](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Win_create.3.html),
+  [MPI_Get](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Get.3.html),
+  [MPI_Put](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Put.3.html),
+  [MPI_Win_lock_all](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Win_lock_all.3.html),
+  [MPI_Win_flush_all](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Win_flush_all.3.html),
+  [MPI_Win_sync](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Win_sync.3.html), and
+  [MPI_Win_unlock_all](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_Win_unlock_all.3.html).
 - [OpenMP API Specification 5.2](https://www.openmp.org/specifications/), OpenMP Architecture Review Board, 2021. Reference for `parallel for`, runtime scheduling, and the OpenMP runtime routines.
 - [Matrix Market Exchange Formats](https://math.nist.gov/MatrixMarket/formats.html), National Institute of Standards and Technology. Reference for the coordinate input format, its one-based indices, fields, and symmetry conventions.
 
 ## Scientific literature
 
 - P. Koanantakool et al., [Communication-Avoiding Parallel Sparse-Dense Matrix-Matrix Multiplication](https://doi.org/10.1109/IPDPS.2016.117), IPDPS 2016. Direct reference for distributed SpMM and for the central role of communication cost.
-- G. Schubert et al., [Hybrid-parallel sparse matrix-vector multiplication with explicit communication overlap on current multicore-based systems](https://arxiv.org/abs/1106.5908), Parallel Processing Letters, 2011. Although it studies SpMV, it motivates comparing pure MPI and hybrid MPI+OpenMP and cautions against assuming that nonblocking MPI automatically provides useful overlap.
+- G. Schubert et al., [Hybrid-parallel sparse matrix-vector multiplication with explicit communication overlap on current multicore-based systems](https://arxiv.org/abs/1106.5908), Parallel Processing Letters, 2011. Although it studies SpMV, it motivates comparing pure MPI and hybrid MPI+OpenMP and cautions against assuming that nonblocking communication automatically provides useful overlap.
 - C. Lively et al., [Energy and performance characteristics of different parallel implementations of scientific applications on multicore systems](https://doi.org/10.1177/1094342011414749), The International Journal of High Performance Computing Applications, 2011. Relevant precedent for comparing MPI-only and hybrid MPI+OpenMP applications through strong- and weak-scaling experiments.
+- T. Hoefler et al., [Remote Memory Access Programming in MPI-3](https://doi.org/10.1145/2780584), ACM Transactions on Parallel Computing, 2015. Direct background for MPI-3 RMA access semantics, passive-target synchronization, `lock_all` epochs, and the unified/separate window memory models used by both one-sided variants.
+- J. Dinan et al., [An Implementation and Evaluation of the MPI 3.0 One-Sided Communication Interface](https://doi.org/10.1002/cpe.3758), Concurrency and Computation: Practice and Experience, 2016. Relevant implementation and performance study of the MPI-3 RMA interface, including the synchronization and memory-model mechanisms used here. It motivates measuring RMA communication separately rather than assuming a universal advantage over two-sided MPI.
+- N. Brown et al., [Leveraging MPI RMA to Optimise Halo-Swapping Communications in MONC on Cray Machines](https://doi.org/10.1002/cpe.5008), Concurrency and Computation: Practice and Experience, 2019. Closest application-level precedent: it replaces a nonblocking point-to-point halo exchange with MPI RMA, studies correctness and synchronization choices, and reports platform-dependent scaling results. Its measurements are not treated as predictions for this SpMM implementation.
 
 ## Decisions applied here
 
 - Sparse matrix `A` uses CSR and is distributed by contiguous row blocks.
 - A Matrix Market coordinate file can be read by rank 0 and converted to CSR before timing starts. Only the required CSR blocks are then distributed to the other ranks.
-- Each rank owns the corresponding row block of dense matrix `B`.
-- Before the kernel, an explicit two-sided `MPI_Isend`/`MPI_Irecv` protocol exchanges the required remote rows of `B`. This is a halo exchange, not a global replication of `B`.
-- The local SpMM kernel is parallelized across local rows with OpenMP. MPI is called only by the initial thread, therefore the program requests `MPI_THREAD_FUNNELED`.
-- The default OpenMP schedule is `guided` with a configurable chunk size. `static`, `dynamic`, and `auto` remain available because the best schedule depends on matrix irregularity and hardware.
-- Distribution, halo-plan setup, communication, computation, and result gathering are measured separately. Fresh remote values of `B` are exchanged for every timed sample. The current baseline rebuilds the request plan for each sample; a later optimization can reuse that plan while retaining the same communication semantics.
-- Each timed kernel sample is reduced to the maximum rank time, and the results file stores the P90 across samples after untimed warmup iterations.
+- Each rank owns the corresponding row block of dense matrix `B`, and `B` is regenerated deterministically for every warmup and timed sample.
+- The two-sided implementation preserves the existing halo semantics: each sample rebuilds the remote-row request plan locally and then exchanges row counts, row identifiers, and dense values with `MPI_Isend`/`MPI_Irecv`.
+- The `one_sided_get` implementation exposes each rank's local block of `B` through a stable MPI window and uses a passive-target `MPI_Win_lock_all` epoch with `MPI_Get`, `MPI_Win_flush_all`, and `MPI_Win_unlock_all`. After local stores to the exposed window memory, the rank calls `MPI_Win_sync` before the barrier that releases remote gets.
+- The `one_sided_put` implementation discovers remote row requests and target slots once, exposes a stable halo receive buffer through an MPI window, and refreshes that halo with `MPI_Put` in a passive-target epoch. After the put phase completes, a barrier plus `MPI_Win_sync` makes the received halo visible to local load accesses before the SpMM kernel starts.
+- Setup, communication, computation, and gathering remain measured separately. For the RMA variants, `halo_setup_seconds` includes one-time plan discovery plus the initial halo population; the per-sample P90 metrics cover only the repeated halo refresh and computation phases.
+- Each timed kernel sample is reduced to the maximum rank time, the results file stores the P90 across samples after untimed warmup iterations, and validation on rank 0 compares the gathered distributed result against a serial SpMM using the same dense-matrix epoch.
+- All implementations keep the same OpenMP schedule interface (`guided` by default, with `static`, `dynamic`, `auto`, and `--chunk`), the same comparable TSV columns, and separate result directories under `results/`.
 
 The corresponding BibTeX citations are in [`references.bib`](references.bib).

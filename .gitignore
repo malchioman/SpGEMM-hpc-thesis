@@ -1,9 +1,11 @@
 .idea/
 build/
+build-wsl/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
 compile_commands.json
+results/tmp/
 *.o
 *.obj
 *.exe
