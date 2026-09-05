@@ -1,4 +1,4 @@
-#include "spmm_common.hpp"
+#include "spgemm_common.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,8 +8,10 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -19,24 +21,30 @@ constexpr int kHeaderTag = 100;
 constexpr int kRowPtrTag = 101;
 constexpr int kColumnTag = 102;
 constexpr int kValueTag = 103;
-constexpr int kResultTag = 300;
+constexpr int kResultHeaderTag = 300;
+constexpr int kResultRowPtrTag = 301;
+constexpr int kResultColumnTag = 302;
+constexpr int kResultValueTag = 303;
 
 void printUsage(const std::string& programName, const std::string& defaultResultsPath) {
     std::cout
         << "Usage: " << programName << " [options]\n"
-        << "  --rows N          Rows of sparse matrix A (default: 1024)\n"
-        << "  --cols N          Columns of sparse matrix A / rows of B (default: 1024)\n"
-        << "  --dense-cols N    Columns of dense matrix B (default: 32)\n"
-        << "  --nnz-per-row N   Non-zeros in each row of A (default: 16)\n"
-        << "  --threads N       OpenMP threads per MPI rank (default: 1)\n"
-        << "  --warmup N        Untimed SpMM repetitions before measurement (default: 2)\n"
-        << "  --repeats N       Timed repetitions in each trial (default: 10)\n"
-        << "  --trials N        Number of independent trials (default: 5)\n"
-        << "  --matrix PATH     Matrix Market coordinate input; synthetic matrix if omitted\n"
-        << "  --results PATH    TSV output path (default: " << defaultResultsPath << ")\n"
-        << "  --experiment TAG  Experiment label stored in the TSV (default: manual)\n"
-        << "  --schedule NAME   OpenMP schedule: static, dynamic, guided, auto (default: guided)\n"
-        << "  --chunk N         OpenMP schedule chunk, ignored by auto (default: 64)\n";
+        << "  --rows N             Rows of synthetic sparse matrix A (default: 1024)\n"
+        << "  --cols N             Columns of A / rows of B (default: 1024)\n"
+        << "  --b-cols N           Columns of synthetic sparse matrix B (default: 1024)\n"
+        << "  --nnz-per-row N      Non-zeros in each synthetic row of A (default: 16)\n"
+        << "  --b-nnz-per-row N    Non-zeros in each synthetic row of B (default: 16)\n"
+        << "  --threads N          OpenMP threads per MPI rank (default: 1)\n"
+        << "  --warmup N           Untimed SpGEMM repetitions before measurement (default: 2)\n"
+        << "  --repeats N          Timed repetitions in each trial (default: 10)\n"
+        << "  --trials N           Number of independent trials (default: 5)\n"
+        << "  --matrix PATH        Matrix Market input used for both A and B; must be square\n"
+        << "  --matrix-a PATH      Matrix Market coordinate input for A\n"
+        << "  --matrix-b PATH      Matrix Market coordinate input for B\n"
+        << "  --results PATH       TSV output path (default: " << defaultResultsPath << ")\n"
+        << "  --experiment TAG     Experiment label stored in the TSV (default: manual)\n"
+        << "  --schedule NAME      OpenMP schedule: static, dynamic, guided, auto (default: guided)\n"
+        << "  --chunk N            OpenMP schedule chunk, ignored by auto (default: 64)\n";
 }
 
 int parsePositiveInt(const char* value, const char* option) {
@@ -71,6 +79,76 @@ T* dataOrNull(std::vector<T>& values) {
 template <typename T>
 const T* dataOrNull(const std::vector<T>& values) {
     return values.empty() ? nullptr : values.data();
+}
+
+void validateMultiplicationDimensions(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    if (matrixA.cols != matrixB.rows) {
+        throw std::invalid_argument("SpGEMM requires A.cols == B.rows");
+    }
+}
+
+void appendCsrBlock(CsrMatrix& globalResult, const CsrMatrix& localResult, RowBlock block,
+                    int resultCols) {
+    if (localResult.rows != block.rows || localResult.cols != resultCols) {
+        throw std::runtime_error("received a result block with an unexpected shape");
+    }
+
+    for (int row = 0; row < localResult.rows; ++row) {
+        const int first = localResult.rowPtr[row];
+        const int last = localResult.rowPtr[row + 1];
+        globalResult.rowPtr[block.firstRow + row + 1] =
+            globalResult.rowPtr[block.firstRow + row] + (last - first);
+        globalResult.columnIndices.insert(globalResult.columnIndices.end(),
+                                          localResult.columnIndices.begin() + first,
+                                          localResult.columnIndices.begin() + last);
+        globalResult.values.insert(globalResult.values.end(), localResult.values.begin() + first,
+                                   localResult.values.begin() + last);
+    }
+}
+
+CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    validateMultiplicationDimensions(matrixA, matrixB);
+
+    CsrMatrix result;
+    result.rows = matrixA.rows;
+    result.cols = matrixB.cols;
+    result.rowPtr.resize(matrixA.rows + 1, 0);
+
+    std::unordered_map<int, double> accumulator;
+    std::vector<int> touchedColumns;
+    for (int row = 0; row < matrixA.rows; ++row) {
+        accumulator.clear();
+        touchedColumns.clear();
+
+        for (int aEntry = matrixA.rowPtr[row]; aEntry < matrixA.rowPtr[row + 1]; ++aEntry) {
+            const int bRow = matrixA.columnIndices[aEntry];
+            if (bRow < 0 || bRow >= matrixB.rows) {
+                throw std::runtime_error("A contains a column index outside B's row range");
+            }
+            const double aValue = matrixA.values[aEntry];
+            for (int bEntry = matrixB.rowPtr[bRow]; bEntry < matrixB.rowPtr[bRow + 1]; ++bEntry) {
+                const int column = matrixB.columnIndices[bEntry];
+                const double product = aValue * matrixB.values[bEntry];
+                const auto [position, inserted] = accumulator.emplace(column, product);
+                if (inserted) {
+                    touchedColumns.push_back(column);
+                } else {
+                    position->second += product;
+                }
+            }
+        }
+
+        std::sort(touchedColumns.begin(), touchedColumns.end());
+        for (const int column : touchedColumns) {
+            const double value = accumulator.at(column);
+            if (value != 0.0) {
+                result.columnIndices.push_back(column);
+                result.values.push_back(value);
+            }
+        }
+        result.rowPtr[row + 1] = static_cast<int>(result.values.size());
+    }
+    return result;
 }
 
 }  // namespace
@@ -109,11 +187,20 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
             throw std::invalid_argument("missing value for " + argument);
         }
 
-        if (argument == "--schedule" || argument == "--matrix" || argument == "--results" ||
-            argument == "--experiment") {
+        if (argument == "--schedule" || argument == "--matrix" || argument == "--matrix-a" ||
+            argument == "--matrix-b" || argument == "--results" || argument == "--experiment") {
             const std::string value = argv[++index];
             if (argument == "--matrix") {
-                options.matrixPath = value;
+                options.matrixAPath = value;
+                options.matrixBPath = value;
+                continue;
+            }
+            if (argument == "--matrix-a") {
+                options.matrixAPath = value;
+                continue;
+            }
+            if (argument == "--matrix-b") {
+                options.matrixBPath = value;
                 continue;
             }
             if (argument == "--results") {
@@ -140,10 +227,12 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
             options.rows = value;
         } else if (argument == "--cols") {
             options.cols = value;
-        } else if (argument == "--dense-cols") {
-            options.denseCols = value;
+        } else if (argument == "--b-cols") {
+            options.bCols = value;
         } else if (argument == "--nnz-per-row") {
             options.nonZerosPerRow = value;
+        } else if (argument == "--b-nnz-per-row") {
+            options.bNonZerosPerRow = value;
         } else if (argument == "--threads") {
             options.threads = value;
         } else if (argument == "--repeats" || argument == "--iterations") {
@@ -161,6 +250,9 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
 
     if (options.nonZerosPerRow > options.cols) {
         throw std::invalid_argument("--nnz-per-row cannot exceed --cols");
+    }
+    if (options.bNonZerosPerRow > options.bCols) {
+        throw std::invalid_argument("--b-nnz-per-row cannot exceed --b-cols");
     }
     return options;
 }
@@ -205,8 +297,8 @@ CsrMatrix makeBandedMatrix(int rows, int cols, int nonZerosPerRow) {
     matrix.rows = rows;
     matrix.cols = cols;
     matrix.rowPtr.resize(rows + 1);
-    matrix.columnIndices.reserve(rows * nonZerosPerRow);
-    matrix.values.reserve(rows * nonZerosPerRow);
+    matrix.columnIndices.reserve(static_cast<std::size_t>(rows) * nonZerosPerRow);
+    matrix.values.reserve(static_cast<std::size_t>(rows) * nonZerosPerRow);
 
     for (int row = 0; row < rows; ++row) {
         matrix.rowPtr[row] = static_cast<int>(matrix.values.size());
@@ -253,19 +345,20 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
         for (int target = 1; target < ranks; ++target) {
             MPI_Request request = MPI_REQUEST_NULL;
             checkMpi(MPI_Isend(headers[target].data(), 3, MPI_INT, target, kHeaderTag, communicator,
-                               &request), "MPI_Isend(matrix header)", communicator);
+                               &request),
+                     "MPI_Isend(matrix header)", communicator);
             requests.push_back(request);
-            checkMpi(MPI_Isend(slices[target].rowPtr.data(), headers[target][0] + 1, MPI_INT, target,
-                               kRowPtrTag, communicator, &request), "MPI_Isend(row pointers)",
-                     communicator);
+            checkMpi(MPI_Isend(slices[target].rowPtr.data(), headers[target][0] + 1, MPI_INT,
+                               target, kRowPtrTag, communicator, &request),
+                     "MPI_Isend(row pointers)", communicator);
             requests.push_back(request);
             checkMpi(MPI_Isend(slices[target].columnIndices.data(), headers[target][2], MPI_INT,
                                target, kColumnTag, communicator, &request),
                      "MPI_Isend(column indices)", communicator);
             requests.push_back(request);
             checkMpi(MPI_Isend(slices[target].values.data(), headers[target][2], MPI_DOUBLE, target,
-                               kValueTag, communicator, &request), "MPI_Isend(values)",
-                     communicator);
+                               kValueTag, communicator, &request),
+                     "MPI_Isend(values)", communicator);
             requests.push_back(request);
         }
         waitAll(requests, communicator);
@@ -282,36 +375,17 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
     localMatrix.columnIndices.resize(header[2]);
     localMatrix.values.resize(header[2]);
     std::vector<MPI_Request> requests(3, MPI_REQUEST_NULL);
-    checkMpi(MPI_Irecv(dataOrNull(localMatrix.rowPtr), localMatrix.rows + 1, MPI_INT, 0, kRowPtrTag,
-                       communicator, &requests[0]), "MPI_Irecv(row pointers)", communicator);
+    checkMpi(MPI_Irecv(dataOrNull(localMatrix.rowPtr), localMatrix.rows + 1, MPI_INT, 0,
+                       kRowPtrTag, communicator, &requests[0]),
+             "MPI_Irecv(row pointers)", communicator);
     checkMpi(MPI_Irecv(dataOrNull(localMatrix.columnIndices), header[2], MPI_INT, 0, kColumnTag,
-                       communicator, &requests[1]), "MPI_Irecv(column indices)", communicator);
+                       communicator, &requests[1]),
+             "MPI_Irecv(column indices)", communicator);
     checkMpi(MPI_Irecv(dataOrNull(localMatrix.values), header[2], MPI_DOUBLE, 0, kValueTag,
-                       communicator, &requests[2]), "MPI_Irecv(values)", communicator);
+                       communicator, &requests[2]),
+             "MPI_Irecv(values)", communicator);
     waitAll(requests, communicator);
     return localMatrix;
-}
-
-double denseValue(int row, int column, int epoch) {
-    const long long seed = static_cast<long long>(row) * 31 + static_cast<long long>(column) * 7 +
-                           static_cast<long long>(epoch) * 11;
-    return static_cast<double>((seed % 23) - 11) / 11.0;
-}
-
-void fillOwnedDenseRows(RowBlock block, int denseCols, int epoch, std::vector<double>& values) {
-    values.resize(static_cast<std::size_t>(block.rows) * denseCols);
-    for (int localRow = 0; localRow < block.rows; ++localRow) {
-        for (int column = 0; column < denseCols; ++column) {
-            values[static_cast<std::size_t>(localRow) * denseCols + column] =
-                denseValue(block.firstRow + localRow, column, epoch);
-        }
-    }
-}
-
-std::vector<double> makeOwnedDenseRows(RowBlock block, int denseCols, int epoch) {
-    std::vector<double> values;
-    fillOwnedDenseRows(block, denseCols, epoch, values);
-    return values;
 }
 
 void waitAll(std::vector<MPI_Request>& requests, MPI_Comm communicator) {
@@ -321,53 +395,104 @@ void waitAll(std::vector<MPI_Request>& requests, MPI_Comm communicator) {
     }
 }
 
-std::vector<double> gatherResult(const std::vector<double>& localResult,
-                                 const std::vector<RowBlock>& blocks, int denseCols, int rank,
-                                 int ranks, MPI_Comm communicator) {
+CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlock>& blocks,
+                          int resultCols, int rank, int ranks, MPI_Comm communicator) {
     if (rank == 0) {
-        std::vector<double> globalResult(
-            static_cast<std::size_t>(blocks.back().firstRow + blocks.back().rows) * denseCols);
-        std::copy(localResult.begin(), localResult.end(), globalResult.begin());
-        std::vector<MPI_Request> requests;
-        requests.reserve(ranks - 1);
+        CsrMatrix globalResult;
+        globalResult.rows = blocks.back().firstRow + blocks.back().rows;
+        globalResult.cols = resultCols;
+        globalResult.rowPtr.assign(globalResult.rows + 1, 0);
+
+        appendCsrBlock(globalResult, localResult, blocks[0], resultCols);
+
         for (int peer = 1; peer < ranks; ++peer) {
-            MPI_Request request = MPI_REQUEST_NULL;
-            const int count = blocks[peer].rows * denseCols;
-            checkMpi(MPI_Irecv(globalResult.data() +
-                                   static_cast<std::size_t>(blocks[peer].firstRow) * denseCols,
-                               count, MPI_DOUBLE, peer, kResultTag, communicator, &request),
-                     "MPI_Irecv(result)", communicator);
-            requests.push_back(request);
+            std::array<int, 3> header{};
+            checkMpi(MPI_Recv(header.data(), 3, MPI_INT, peer, kResultHeaderTag, communicator,
+                              MPI_STATUS_IGNORE),
+                     "MPI_Recv(result header)", communicator);
+
+            CsrMatrix peerResult;
+            peerResult.rows = header[0];
+            peerResult.cols = header[1];
+            peerResult.rowPtr.resize(peerResult.rows + 1);
+            peerResult.columnIndices.resize(header[2]);
+            peerResult.values.resize(header[2]);
+
+            checkMpi(MPI_Recv(dataOrNull(peerResult.rowPtr), peerResult.rows + 1, MPI_INT, peer,
+                              kResultRowPtrTag, communicator, MPI_STATUS_IGNORE),
+                     "MPI_Recv(result row pointers)", communicator);
+            checkMpi(MPI_Recv(dataOrNull(peerResult.columnIndices), header[2], MPI_INT, peer,
+                              kResultColumnTag, communicator, MPI_STATUS_IGNORE),
+                     "MPI_Recv(result column indices)", communicator);
+            checkMpi(MPI_Recv(dataOrNull(peerResult.values), header[2], MPI_DOUBLE, peer,
+                              kResultValueTag, communicator, MPI_STATUS_IGNORE),
+                     "MPI_Recv(result values)", communicator);
+            appendCsrBlock(globalResult, peerResult, blocks[peer], resultCols);
         }
-        waitAll(requests, communicator);
         return globalResult;
     }
 
-    MPI_Request request = MPI_REQUEST_NULL;
-    checkMpi(MPI_Isend(dataOrNull(localResult), static_cast<int>(localResult.size()), MPI_DOUBLE, 0,
-                       kResultTag, communicator, &request),
-             "MPI_Isend(result)", communicator);
-    checkMpi(MPI_Wait(&request, MPI_STATUS_IGNORE), "MPI_Wait(result)", communicator);
+    const std::array<int, 3> header = {localResult.rows, localResult.cols,
+                                       static_cast<int>(localResult.values.size())};
+    checkMpi(MPI_Send(header.data(), 3, MPI_INT, 0, kResultHeaderTag, communicator),
+             "MPI_Send(result header)", communicator);
+    checkMpi(MPI_Send(dataOrNull(localResult.rowPtr), localResult.rows + 1, MPI_INT, 0,
+                      kResultRowPtrTag, communicator),
+             "MPI_Send(result row pointers)", communicator);
+    checkMpi(MPI_Send(dataOrNull(localResult.columnIndices), header[2], MPI_INT, 0,
+                      kResultColumnTag, communicator),
+             "MPI_Send(result column indices)", communicator);
+    checkMpi(MPI_Send(dataOrNull(localResult.values), header[2], MPI_DOUBLE, 0, kResultValueTag,
+                      communicator),
+             "MPI_Send(result values)", communicator);
     return {};
 }
 
-std::vector<double> serialSpmm(const CsrMatrix& matrix, int denseCols, int denseEpoch) {
-    std::vector<double> result(static_cast<std::size_t>(matrix.rows) * denseCols, 0.0);
-    for (int row = 0; row < matrix.rows; ++row) {
-        for (int entry = matrix.rowPtr[row]; entry < matrix.rowPtr[row + 1]; ++entry) {
-            for (int column = 0; column < denseCols; ++column) {
-                result[static_cast<std::size_t>(row) * denseCols + column] +=
-                    matrix.values[entry] * denseValue(matrix.columnIndices[entry], column, denseEpoch);
-            }
-        }
-    }
-    return result;
+CsrMatrix serialSpgemm(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    return buildSerialRowWiseProduct(matrixA, matrixB);
 }
 
-double maxAbsoluteDifference(const std::vector<double>& lhs, const std::vector<double>& rhs) {
+std::int64_t scalarMultiplicationCount(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    validateMultiplicationDimensions(matrixA, matrixB);
+    std::int64_t count = 0;
+    for (int row = 0; row < matrixA.rows; ++row) {
+        for (int entry = matrixA.rowPtr[row]; entry < matrixA.rowPtr[row + 1]; ++entry) {
+            const int bRow = matrixA.columnIndices[entry];
+            if (bRow < 0 || bRow >= matrixB.rows) {
+                throw std::runtime_error("A contains a column index outside B's row range");
+            }
+            count += matrixB.rowPtr[bRow + 1] - matrixB.rowPtr[bRow];
+        }
+    }
+    return count;
+}
+
+double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs) {
+    if (lhs.rows != rhs.rows || lhs.cols != rhs.cols) {
+        return std::numeric_limits<double>::infinity();
+    }
+
     double maximum = 0.0;
-    for (std::size_t index = 0; index < lhs.size(); ++index) {
-        maximum = std::max(maximum, std::abs(lhs[index] - rhs[index]));
+    for (int row = 0; row < lhs.rows; ++row) {
+        int left = lhs.rowPtr[row];
+        int right = rhs.rowPtr[row];
+        const int leftEnd = lhs.rowPtr[row + 1];
+        const int rightEnd = rhs.rowPtr[row + 1];
+
+        while (left < leftEnd || right < rightEnd) {
+            if (right == rightEnd ||
+                (left < leftEnd && lhs.columnIndices[left] < rhs.columnIndices[right])) {
+                maximum = std::max(maximum, std::abs(lhs.values[left]));
+                ++left;
+            } else if (left == leftEnd || rhs.columnIndices[right] < lhs.columnIndices[left]) {
+                maximum = std::max(maximum, std::abs(rhs.values[right]));
+                ++right;
+            } else {
+                maximum = std::max(maximum, std::abs(lhs.values[left] - rhs.values[right]));
+                ++left;
+                ++right;
+            }
+        }
     }
     return maximum;
 }
@@ -391,7 +516,8 @@ double percentile90(std::vector<double> samples) {
 }
 
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
-                           const CsrMatrix& matrix, double distributionSeconds,
+                           const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                           const CsrMatrix& matrixC, double distributionSeconds,
                            double haloSetupSeconds, double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops, double maxAbsoluteError) {
@@ -416,40 +542,48 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
         throw std::runtime_error("cannot write results file: " + outputPath.string());
     }
     if (writeHeader) {
-        output << "implementation\texperiment\tmatrix_source\trows\tcols\tnnz\tdense_cols\tranks"
+        output << "implementation\texperiment\tmatrix_a_source\tmatrix_b_source"
+               << "\ta_rows\ta_cols\tb_rows\tb_cols\ta_nnz\tb_nnz\tc_nnz\tranks"
                << "\tthreads_per_rank\tomp_schedule\tomp_chunk\twarmup\trepeats\ttrials"
                << "\tdistribution_seconds\thalo_setup_seconds\tcommunication_p90_seconds"
                << "\tcompute_p90_seconds\tend_to_end_p90_seconds\tgather_seconds\tcompute_gflops_p90"
                << "\tmax_abs_error\tvalidation\n";
     }
-    output << std::setprecision(17)
-           << implementation << '\t' << options.experiment << '\t'
-           << (options.matrixPath.empty() ? "synthetic" : options.matrixPath) << '\t'
-           << matrix.rows << '\t' << matrix.cols << '\t' << matrix.values.size() << '\t'
-           << options.denseCols << '\t' << ranks << '\t' << options.threads << '\t'
+    output << std::setprecision(17) << implementation << '\t' << options.experiment << '\t'
+           << (options.matrixAPath.empty() ? "synthetic" : options.matrixAPath) << '\t'
+           << (options.matrixBPath.empty() ? "synthetic" : options.matrixBPath) << '\t'
+           << matrixA.rows << '\t' << matrixA.cols << '\t' << matrixB.rows << '\t'
+           << matrixB.cols << '\t' << matrixA.values.size() << '\t' << matrixB.values.size()
+           << '\t' << matrixC.values.size() << '\t' << ranks << '\t' << options.threads << '\t'
            << options.schedule << '\t' << options.chunk << '\t' << options.warmup << '\t'
-           << options.repeats << '\t' << options.trials << '\t'
-           << distributionSeconds << '\t' << haloSetupSeconds << '\t'
-           << communicationP90Seconds << '\t' << computeP90Seconds << '\t'
-           << endToEndP90Seconds << '\t' << gatherSeconds << '\t' << gflops << '\t'
-           << maxAbsoluteError << '\t' << (maxAbsoluteError < 1.0e-10 ? "PASS" : "FAIL") << '\n';
+           << options.repeats << '\t' << options.trials << '\t' << distributionSeconds << '\t'
+           << haloSetupSeconds << '\t' << communicationP90Seconds << '\t' << computeP90Seconds
+           << '\t' << endToEndP90Seconds << '\t' << gatherSeconds << '\t' << gflops << '\t'
+           << maxAbsoluteError << '\t' << (maxAbsoluteError < 1.0e-10 ? "PASS" : "FAIL")
+           << '\n';
 }
 
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
-                           const CsrMatrix& matrix, double distributionSeconds,
+                           const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                           const CsrMatrix& matrixC, double distributionSeconds,
                            double haloSetupSeconds, double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops, double maxAbsoluteError) {
-    std::cout << std::fixed << std::setprecision(6)
-              << "implementation=" << implementation << '\n'
+    std::cout << std::fixed << std::setprecision(6) << "implementation=" << implementation << '\n'
               << "ranks=" << ranks << " threads_per_rank=" << options.threads
               << " omp_schedule=" << options.schedule << " omp_chunk=" << options.chunk << '\n'
               << "experiment=" << options.experiment << " warmup=" << options.warmup
               << " repeats=" << options.repeats << " trials=" << options.trials << '\n'
-              << "matrix=" << matrix.rows << 'x' << matrix.cols << " nnz=" << matrix.values.size()
-              << " dense_cols=" << options.denseCols << '\n'
-              << "matrix_source=" << (options.matrixPath.empty() ? "synthetic" : options.matrixPath)
+              << "A=" << matrixA.rows << 'x' << matrixA.cols << " nnz=" << matrixA.values.size()
               << '\n'
+              << "B=" << matrixB.rows << 'x' << matrixB.cols << " nnz=" << matrixB.values.size()
+              << '\n'
+              << "C=" << matrixC.rows << 'x' << matrixC.cols << " nnz=" << matrixC.values.size()
+              << '\n'
+              << "matrix_a_source="
+              << (options.matrixAPath.empty() ? "synthetic" : options.matrixAPath) << '\n'
+              << "matrix_b_source="
+              << (options.matrixBPath.empty() ? "synthetic" : options.matrixBPath) << '\n'
               << "distribution_seconds=" << distributionSeconds << '\n'
               << "halo_setup_seconds=" << haloSetupSeconds << '\n'
               << "communication_p90_seconds=" << communicationP90Seconds << '\n'

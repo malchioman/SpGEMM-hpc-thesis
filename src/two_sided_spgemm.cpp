@@ -2,20 +2,48 @@
 #include <omp.h>
 
 #include "matrix_market.hpp"
-#include "spmm_common.hpp"
-#include "spmm_exchange.hpp"
+#include "spgemm_common.hpp"
+#include "spgemm_exchange.hpp"
 
 #include <array>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
 
-constexpr char kProgramName[] = "spmm_two_sided";
+constexpr char kProgramName[] = "spgemm_two_sided";
 constexpr char kImplementation[] = "mpi_openmp_two_sided";
 constexpr char kDefaultResultsPath[] = "results/two_sided/benchmarks.tsv";
+
+CsrMatrix loadMatrixA(const Options& options) {
+    if (!options.matrixAPath.empty()) {
+        return readMatrixMarket(options.matrixAPath);
+    }
+    return makeBandedMatrix(options.rows, options.cols, options.nonZerosPerRow);
+}
+
+CsrMatrix loadMatrixB(const Options& options, const CsrMatrix& matrixA) {
+    if (!options.matrixBPath.empty()) {
+        return readMatrixMarket(options.matrixBPath);
+    }
+    if (!options.matrixAPath.empty()) {
+        if (matrixA.rows != matrixA.cols) {
+            throw std::invalid_argument(
+                "--matrix-a without --matrix-b requires a square A so it can be reused as B");
+        }
+        return matrixA;
+    }
+    return makeBandedMatrix(options.cols, options.bCols, options.bNonZerosPerRow);
+}
+
+void validateDimensions(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    if (matrixA.cols != matrixB.rows) {
+        throw std::invalid_argument("SpGEMM requires A.cols == B.rows");
+    }
+}
 
 }  // namespace
 
@@ -41,48 +69,44 @@ int main(int argc, char** argv) {
         omp_set_num_threads(options.threads);
         omp_set_schedule(parseSchedule(options.schedule), options.chunk);
 
-        CsrMatrix globalMatrix;
-        std::array<int, 2> matrixShape{};
+        CsrMatrix globalMatrixA;
+        CsrMatrix globalMatrixB;
+        std::array<int, 4> matrixShape{};
         if (rank == 0) {
-            globalMatrix = options.matrixPath.empty()
-                               ? makeBandedMatrix(options.rows, options.cols, options.nonZerosPerRow)
-                               : readMatrixMarket(options.matrixPath);
-            matrixShape = {globalMatrix.rows, globalMatrix.cols};
+            globalMatrixA = loadMatrixA(options);
+            globalMatrixB = loadMatrixB(options, globalMatrixA);
+            validateDimensions(globalMatrixA, globalMatrixB);
+            matrixShape = {globalMatrixA.rows, globalMatrixA.cols, globalMatrixB.rows,
+                           globalMatrixB.cols};
         }
         checkMpi(MPI_Bcast(matrixShape.data(), static_cast<int>(matrixShape.size()), MPI_INT, 0,
                            communicator),
                  "MPI_Bcast(matrix shape)", communicator);
 
         const std::vector<RowBlock> outputBlocks = partitionRows(matrixShape[0], ranks);
-        const std::vector<RowBlock> denseBlocks = partitionRows(matrixShape[1], ranks);
+        const std::vector<RowBlock> bRowBlocks = partitionRows(matrixShape[2], ranks);
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double distributionStart = MPI_Wtime();
-        CsrMatrix localMatrix = distributeMatrix(rank == 0 ? &globalMatrix : nullptr, outputBlocks,
-                                                 rank, ranks, communicator);
+        CsrMatrix localMatrixA = distributeMatrix(rank == 0 ? &globalMatrixA : nullptr, outputBlocks,
+                                                  rank, ranks, communicator);
+        CsrMatrix localMatrixB = distributeMatrix(rank == 0 ? &globalMatrixB : nullptr, bRowBlocks,
+                                                  rank, ranks, communicator);
         const double distributionSeconds = maxElapsed(distributionStart, communicator);
-
-        int denseEpoch = 0;
-        std::vector<double> ownedDenseRows =
-            makeOwnedDenseRows(denseBlocks[rank], options.denseCols, denseEpoch);
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
-        RemoteDenseRows remoteDenseRows = exchangeRemoteDenseRowsTwoSided(
-            localMatrix, denseBlocks, denseBlocks[rank], ownedDenseRows, options.denseCols, rank,
-            ranks, communicator);
+        RemoteSparseRows remoteBRows = exchangeRemoteSparseRowsTwoSided(
+            localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank], rank, ranks, communicator);
         const double haloSetupSeconds = maxElapsed(haloSetupStart, communicator);
 
-        std::vector<double> localResult(static_cast<std::size_t>(localMatrix.rows) * options.denseCols);
+        CsrMatrix localResult;
         for (int iteration = 0; iteration < options.warmup; ++iteration) {
-            ++denseEpoch;
-            fillOwnedDenseRows(denseBlocks[rank], options.denseCols, denseEpoch, ownedDenseRows);
-            remoteDenseRows = exchangeRemoteDenseRowsTwoSided(localMatrix, denseBlocks,
-                                                              denseBlocks[rank], ownedDenseRows,
-                                                              options.denseCols, rank, ranks,
-                                                              communicator);
-            spmm(localMatrix, denseBlocks[rank], ownedDenseRows, remoteDenseRows, options.denseCols,
-                 localResult);
+            remoteBRows = exchangeRemoteSparseRowsTwoSided(localMatrixA, localMatrixB, bRowBlocks,
+                                                           bRowBlocks[rank], rank, ranks,
+                                                           communicator);
+            localResult =
+                spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
         }
 
         std::vector<double> computeSamples;
@@ -99,16 +123,14 @@ int main(int argc, char** argv) {
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         for (int trial = 0; trial < options.trials; ++trial) {
             for (int repeat = 0; repeat < options.repeats; ++repeat) {
-                ++denseEpoch;
-                fillOwnedDenseRows(denseBlocks[rank], options.denseCols, denseEpoch, ownedDenseRows);
                 checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
                 const double start = MPI_Wtime();
-                remoteDenseRows = exchangeRemoteDenseRowsTwoSided(
-                    localMatrix, denseBlocks, denseBlocks[rank], ownedDenseRows, options.denseCols,
-                    rank, ranks, communicator);
+                remoteBRows = exchangeRemoteSparseRowsTwoSided(localMatrixA, localMatrixB, bRowBlocks,
+                                                               bRowBlocks[rank], rank, ranks,
+                                                               communicator);
                 const double exchangeEnd = MPI_Wtime();
-                spmm(localMatrix, denseBlocks[rank], ownedDenseRows, remoteDenseRows, options.denseCols,
-                     localResult);
+                localResult =
+                    spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
                 const double end = MPI_Wtime();
                 const double localTimings[3] = {exchangeEnd - start, end - exchangeEnd, end - start};
                 double maxTimings[3] = {};
@@ -129,21 +151,26 @@ int main(int argc, char** argv) {
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double gatherStart = MPI_Wtime();
-        const std::vector<double> globalResult =
-            gatherResult(localResult, outputBlocks, options.denseCols, rank, ranks, communicator);
+        const CsrMatrix globalResult =
+            gatherCsrMatrix(localResult, outputBlocks, matrixShape[3], rank, ranks, communicator);
         const double gatherSeconds = maxElapsed(gatherStart, communicator);
 
         if (rank == 0) {
-            const std::vector<double> reference = serialSpmm(globalMatrix, options.denseCols, denseEpoch);
+            const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
             const double error = maxAbsoluteDifference(globalResult, reference);
-            const double floatingPointOperations = 2.0 * globalMatrix.values.size() * options.denseCols;
-            const double computeGflops = floatingPointOperations / computeP90Seconds / 1.0e9;
-            appendBenchmarkResult(kImplementation, options, ranks, globalMatrix, distributionSeconds,
-                                  haloSetupSeconds, communicationP90Seconds, computeP90Seconds,
-                                  endToEndP90Seconds, gatherSeconds, computeGflops, error);
-            printBenchmarkSummary(kImplementation, options, ranks, globalMatrix, distributionSeconds,
-                                  haloSetupSeconds, communicationP90Seconds, computeP90Seconds,
-                                  endToEndP90Seconds, gatherSeconds, computeGflops, error);
+            const double floatingPointOperations =
+                2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
+            const double computeGflops = computeP90Seconds > 0.0
+                                             ? floatingPointOperations / computeP90Seconds / 1.0e9
+                                             : 0.0;
+            appendBenchmarkResult(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
+                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
+                                  gatherSeconds, computeGflops, error);
+            printBenchmarkSummary(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
+                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
+                                  gatherSeconds, computeGflops, error);
         }
     } catch (const std::exception& error) {
         fail(error.what(), communicator);
