@@ -39,6 +39,10 @@ General Matrix-Matrix Multiplication implementations.
 - F. G. Gustavson, [Two Fast Algorithms for Sparse Matrices: Multiplication and Permuted Transposition](https://doi.org/10.1145/355791.355796), ACM Transactions on Mathematical Software, 1978. Classical row-wise sparse-matrix multiplication reference; the local kernel follows this accumulator-based style.
 - A. Buluç and J. R. Gilbert, [Parallel Sparse Matrix-Matrix Multiplication and Indexing: Implementation and Experiments](https://doi.org/10.1137/110848244), SIAM Journal on Scientific Computing, 2012. Context for distributed-memory SpGEMM as a sparse linear algebra primitive and for the cost of sparse data movement; this repository uses a simpler one-dimensional row distribution rather than their two-dimensional distribution.
 
+## Hybrid MPI/OpenMP programming
+
+- R. Rabenseifner, G. Hager, and G. Jost, [Hybrid MPI/OpenMP Parallel Programming on Clusters of Multi-Core SMP Nodes](https://doi.org/10.1109/PDP.2009.43), PDP 2009. Context for the hybrid programming model used in this repository: MPI handles distributed-memory communication across ranks, while OpenMP handles shared-memory parallelism inside each rank. This source supports the execution model, not a SpGEMM-specific algorithm.
+
 ## One-sided MPI/RMA literature
 
 - T. Hoefler et al., [Remote Memory Access Programming in MPI-3](https://doi.org/10.1145/2780584), ACM Transactions on Parallel Computing, 2015. Background for passive-target RMA epochs, synchronization, and memory model considerations used by the one-sided variants.
