@@ -16,7 +16,7 @@ namespace {
 
 constexpr char kProgramName[] = "spgemm_one_sided_put";
 constexpr char kImplementation[] = "mpi_openmp_one_sided_put";
-constexpr char kDefaultResultsPath[] = "results/one_sided_put/benchmarks.tsv";
+constexpr char kDefaultResultsPath[] = "results/one_sided_put/benchmarks_v2.tsv";
 constexpr int kPutRequestCountTag = 400;
 constexpr int kPutRequestRowsTag = 401;
 constexpr int kPutRowNnzTag = 402;
@@ -64,14 +64,14 @@ T* dataOrNull(std::vector<T>& values) {
     return values.empty() ? nullptr : values.data();
 }
 
-void unlockAndFree(MPI_Win& window, bool locked) {
+void unlockAndFree(MPI_Win& window, bool locked, MPI_Comm communicator) {
     if (window == MPI_WIN_NULL) {
         return;
     }
     if (locked) {
-        MPI_Win_unlock_all(window);
+        checkMpi(MPI_Win_unlock_all(window), "MPI_Win_unlock_all", communicator);
     }
-    MPI_Win_free(&window);
+    checkMpi(MPI_Win_free(&window), "MPI_Win_free", communicator);
 }
 
 int localRowNonZeros(const CsrMatrix& matrix, int localRow) {
@@ -296,6 +296,9 @@ int main(int argc, char** argv) {
     MPI_Win columnWindow = MPI_WIN_NULL;
     MPI_Win valueWindow = MPI_WIN_NULL;
     bool windowsLocked = false;
+    // Keep exposed halo storage alive until MPI_Win_free has returned.
+    PutPlan putPlan;
+    int exitCode = EXIT_SUCCESS;
 
     try {
         const Options options = parseOptions(argc, argv, kProgramName, kDefaultResultsPath);
@@ -330,8 +333,8 @@ int main(int argc, char** argv) {
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
-        PutPlan putPlan = buildPutPlan(localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank],
-                                       rank, ranks, communicator);
+        putPlan = buildPutPlan(localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank],
+                               rank, ranks, communicator);
         checkMpi(MPI_Win_create(dataOrNull(putPlan.remoteBRows.columnIndices),
                                 static_cast<MPI_Aint>(putPlan.remoteBRows.columnIndices.size()) *
                                     sizeof(int),
@@ -348,14 +351,18 @@ int main(int argc, char** argv) {
                  communicator);
         windowsLocked = true;
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+        const double haloSetupEnd = MPI_Wtime();
         pushSparseRows(putPlan.outgoingByPeer, bRowBlocks[rank], localMatrixB, columnWindow,
                        valueWindow, communicator);
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         checkMpi(MPI_Win_sync(columnWindow), "MPI_Win_sync(columns)", communicator);
         checkMpi(MPI_Win_sync(valueWindow), "MPI_Win_sync(values)", communicator);
-        const double haloSetupSeconds = maxElapsed(haloSetupStart, communicator);
+        CsrMatrix localResult =
+            spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, putPlan.remoteBRows, communicator);
+        const double firstProductEnd = MPI_Wtime();
+        const double haloSetupSeconds = maxRankValue(haloSetupEnd - haloSetupStart, communicator);
+        const double firstProductSeconds = maxRankValue(firstProductEnd - haloSetupStart, communicator);
 
-        CsrMatrix localResult;
         for (int iteration = 0; iteration < options.warmup; ++iteration) {
             checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
             pushSparseRows(putPlan.outgoingByPeer, bRowBlocks[rank], localMatrixB, columnWindow,
@@ -419,28 +426,29 @@ int main(int argc, char** argv) {
         if (rank == 0) {
             const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
             const double error = maxAbsoluteDifference(globalResult, reference);
+            exitCode = validationPassed(error) ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0
                                              ? floatingPointOperations / computeP90Seconds / 1.0e9
                                              : 0.0;
             appendBenchmarkResult(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
-                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
                                   gatherSeconds, computeGflops, error);
             printBenchmarkSummary(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
-                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
                                   gatherSeconds, computeGflops, error);
         }
+        checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, communicator), "MPI_Bcast(validation)", communicator);
     } catch (const std::exception& error) {
-        unlockAndFree(valueWindow, windowsLocked);
-        unlockAndFree(columnWindow, windowsLocked);
+        // Abort directly: other ranks may still be in communication or setup.
         fail(error.what(), communicator);
     }
 
-    unlockAndFree(valueWindow, windowsLocked);
-    unlockAndFree(columnWindow, windowsLocked);
+    unlockAndFree(valueWindow, windowsLocked, communicator);
+    unlockAndFree(columnWindow, windowsLocked, communicator);
     checkMpi(MPI_Finalize(), "MPI_Finalize", communicator);
-    return EXIT_SUCCESS;
+    return exitCode;
 }

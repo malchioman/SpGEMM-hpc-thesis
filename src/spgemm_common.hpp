@@ -54,18 +54,22 @@ CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlo
 CsrMatrix serialSpgemm(const CsrMatrix& matrixA, const CsrMatrix& matrixB);
 std::int64_t scalarMultiplicationCount(const CsrMatrix& matrixA, const CsrMatrix& matrixB);
 double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs);
+bool validationPassed(double maxAbsoluteError);
+double maxRankValue(double value, MPI_Comm communicator);
 double maxElapsed(double start, MPI_Comm communicator);
 double percentile90(std::vector<double> samples);
 
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
-                           double haloSetupSeconds, double communicationP90Seconds,
+                           double haloSetupSeconds, double firstProductSeconds,
+                           double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops, double maxAbsoluteError);
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
-                           double haloSetupSeconds, double communicationP90Seconds,
+                           double haloSetupSeconds, double firstProductSeconds,
+                           double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops, double maxAbsoluteError);
