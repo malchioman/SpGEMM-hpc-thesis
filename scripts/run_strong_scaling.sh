@@ -17,7 +17,7 @@ chunk="${CHUNK:-64}"
 warmup="${WARMUP:-2}"
 repeats="${REPEATS:-10}"
 trials="${TRIALS:-5}"
-results="${RESULTS:-results/two_sided/benchmarks.tsv}"
+results="${RESULTS:-results/two_sided/benchmarks_v2.tsv}"
 
 for ranks in $ranks_list; do
   command=(

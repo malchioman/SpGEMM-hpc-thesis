@@ -16,7 +16,7 @@ namespace {
 
 constexpr char kProgramName[] = "spgemm_two_sided";
 constexpr char kImplementation[] = "mpi_openmp_two_sided";
-constexpr char kDefaultResultsPath[] = "results/two_sided/benchmarks.tsv";
+constexpr char kDefaultResultsPath[] = "results/two_sided/benchmarks_v2.tsv";
 
 CsrMatrix loadMatrixA(const Options& options) {
     if (!options.matrixAPath.empty()) {
@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
         fail("MPI implementation does not provide MPI_THREAD_FUNNELED", communicator);
     }
 
+    int exitCode = EXIT_SUCCESS;
     try {
         const Options options = parseOptions(argc, argv, kProgramName, kDefaultResultsPath);
         omp_set_dynamic(0);
@@ -96,17 +97,24 @@ int main(int argc, char** argv) {
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
-        RemoteSparseRows remoteBRows = exchangeRemoteSparseRowsTwoSided(
+        TwoSidedPlan exchangePlan = buildTwoSidedPlan(
             localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank], rank, ranks, communicator);
-        const double haloSetupSeconds = maxElapsed(haloSetupStart, communicator);
+        checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+        const double haloSetupEnd = MPI_Wtime();
+        exchangeRemoteSparseRowsTwoSided(localMatrixB, bRowBlocks[rank], exchangePlan, rank,
+                                         communicator);
+        CsrMatrix localResult =
+            spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, exchangePlan.remoteRows, communicator);
+        const double firstProductEnd = MPI_Wtime();
+        const double haloSetupSeconds = maxRankValue(haloSetupEnd - haloSetupStart, communicator);
+        const double firstProductSeconds = maxRankValue(firstProductEnd - haloSetupStart, communicator);
 
-        CsrMatrix localResult;
         for (int iteration = 0; iteration < options.warmup; ++iteration) {
-            remoteBRows = exchangeRemoteSparseRowsTwoSided(localMatrixA, localMatrixB, bRowBlocks,
-                                                           bRowBlocks[rank], rank, ranks,
-                                                           communicator);
+            checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+            exchangeRemoteSparseRowsTwoSided(localMatrixB, bRowBlocks[rank], exchangePlan, rank,
+                                             communicator);
             localResult =
-                spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
+                spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, exchangePlan.remoteRows, communicator);
         }
 
         std::vector<double> computeSamples;
@@ -125,12 +133,11 @@ int main(int argc, char** argv) {
             for (int repeat = 0; repeat < options.repeats; ++repeat) {
                 checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
                 const double start = MPI_Wtime();
-                remoteBRows = exchangeRemoteSparseRowsTwoSided(localMatrixA, localMatrixB, bRowBlocks,
-                                                               bRowBlocks[rank], rank, ranks,
-                                                               communicator);
+                exchangeRemoteSparseRowsTwoSided(localMatrixB, bRowBlocks[rank], exchangePlan, rank,
+                                                 communicator);
                 const double exchangeEnd = MPI_Wtime();
                 localResult =
-                    spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
+                    spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, exchangePlan.remoteRows, communicator);
                 const double end = MPI_Wtime();
                 const double localTimings[3] = {exchangeEnd - start, end - exchangeEnd, end - start};
                 double maxTimings[3] = {};
@@ -158,24 +165,26 @@ int main(int argc, char** argv) {
         if (rank == 0) {
             const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
             const double error = maxAbsoluteDifference(globalResult, reference);
+            exitCode = validationPassed(error) ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0
                                              ? floatingPointOperations / computeP90Seconds / 1.0e9
                                              : 0.0;
             appendBenchmarkResult(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
-                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
                                   gatherSeconds, computeGflops, error);
             printBenchmarkSummary(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
-                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
                                   gatherSeconds, computeGflops, error);
         }
+        checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, communicator), "MPI_Bcast(validation)", communicator);
     } catch (const std::exception& error) {
         fail(error.what(), communicator);
     }
 
     checkMpi(MPI_Finalize(), "MPI_Finalize", communicator);
-    return EXIT_SUCCESS;
+    return exitCode;
 }

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -52,11 +51,7 @@ SparseRowView remoteSparseRow(const RemoteSparseRows& rows, int slot) {
             nonZeros == 0 ? nullptr : rows.values.data() + first, nonZeros};
 }
 
-int sumCounts(const std::vector<int>& counts) {
-    return std::accumulate(counts.begin(), counts.end(), 0);
-}
-
-void packRequestedRows(const CsrMatrix& localMatrixB, RowBlock localBBlock,
+void prepareRequestedRows(const CsrMatrix& localMatrixB, RowBlock localBBlock,
                        const std::vector<int>& requests, std::vector<int>& rowNonZeros,
                        std::vector<int>& columns, std::vector<double>& values,
                        MPI_Comm communicator) {
@@ -73,19 +68,8 @@ void packRequestedRows(const CsrMatrix& localMatrixB, RowBlock localBBlock,
         totalNonZeros += nonZeros;
     }
 
-    columns.clear();
-    values.clear();
-    columns.reserve(totalNonZeros);
-    values.reserve(totalNonZeros);
-    for (const int globalRow : requests) {
-        const int localRow = globalRow - localBBlock.firstRow;
-        const int first = localMatrixB.rowPtr[localRow];
-        const int last = localMatrixB.rowPtr[localRow + 1];
-        columns.insert(columns.end(), localMatrixB.columnIndices.begin() + first,
-                       localMatrixB.columnIndices.begin() + last);
-        values.insert(values.end(), localMatrixB.values.begin() + first,
-                      localMatrixB.values.begin() + last);
-    }
+    columns.resize(totalNonZeros);
+    values.resize(totalNonZeros);
 }
 
 SparseRowView bRowForColumn(const CsrMatrix& localMatrixB, RowBlock localBBlock,
@@ -150,11 +134,9 @@ RemoteSparseRows makeRemoteSparseRows(RemoteRowPlan plan) {
     return remoteRows;
 }
 
-RemoteSparseRows exchangeRemoteSparseRowsTwoSided(const CsrMatrix& localMatrixA,
-                                                  const CsrMatrix& localMatrixB,
-                                                  const std::vector<RowBlock>& bBlocks,
-                                                  RowBlock localBBlock, int rank, int ranks,
-                                                  MPI_Comm communicator) {
+TwoSidedPlan buildTwoSidedPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrixB,
+                              const std::vector<RowBlock>& bBlocks, RowBlock localBBlock,
+                              int rank, int ranks, MPI_Comm communicator) {
     RemoteSparseRows remoteRows =
         makeRemoteSparseRows(buildRemoteRowPlan(localMatrixA, bBlocks, rank, communicator));
 
@@ -212,7 +194,7 @@ RemoteSparseRows exchangeRemoteSparseRowsTwoSided(const CsrMatrix& localMatrixA,
             continue;
         }
         incomingRowNonZeros[peer].resize(outgoingCounts[peer]);
-        packRequestedRows(localMatrixB, localBBlock, incomingRequests[peer],
+        prepareRequestedRows(localMatrixB, localBBlock, incomingRequests[peer],
                           outgoingRowNonZeros[peer], outgoingColumns[peer], outgoingValues[peer],
                           communicator);
     }
@@ -248,7 +230,31 @@ RemoteSparseRows exchangeRemoteSparseRowsTwoSided(const CsrMatrix& localMatrixA,
     remoteRows.columnIndices.resize(totalRemoteNonZeros);
     remoteRows.values.resize(totalRemoteNonZeros);
 
-    requests.clear();
+    return {std::move(remoteRows), std::move(incomingRequests), std::move(outgoingColumns),
+            std::move(outgoingValues)};
+}
+
+void exchangeRemoteSparseRowsTwoSided(const CsrMatrix& localMatrixB, RowBlock localBBlock,
+                                     TwoSidedPlan& plan, int rank, MPI_Comm communicator) {
+    auto& remoteRows = plan.remoteRows;
+    auto& outgoingColumns = plan.outgoingColumns;
+    auto& outgoingValues = plan.outgoingValues;
+    const int ranks = static_cast<int>(plan.incomingRequests.size());
+    for (int peer = 0; peer < ranks; ++peer) {
+        int offset = 0;
+        for (const int globalRow : plan.incomingRequests[peer]) {
+            const int localRow = globalRow - localBBlock.firstRow;
+            const int first = localMatrixB.rowPtr[localRow];
+            const int count = localMatrixB.rowPtr[localRow + 1] - first;
+            std::copy_n(localMatrixB.columnIndices.begin() + first, count,
+                        outgoingColumns[peer].begin() + offset);
+            std::copy_n(localMatrixB.values.begin() + first, count,
+                        outgoingValues[peer].begin() + offset);
+            offset += count;
+        }
+    }
+
+    std::vector<MPI_Request> requests;
     requests.reserve(4 * (ranks - 1));
     for (int peer = 0; peer < ranks; ++peer) {
         if (peer == rank) {
@@ -256,7 +262,8 @@ RemoteSparseRows exchangeRemoteSparseRowsTwoSided(const CsrMatrix& localMatrixA,
         }
 
         const int receiveOffset = remoteRows.rowPtr[remoteRows.plan.peerOffsets[peer]];
-        const int receiveCount = sumCounts(incomingRowNonZeros[peer]);
+        const int receiveCount =
+            remoteRows.rowPtr[remoteRows.plan.peerOffsets[peer + 1]] - receiveOffset;
         const int sendCount = static_cast<int>(outgoingColumns[peer].size());
         MPI_Request request = MPI_REQUEST_NULL;
         checkMpi(MPI_Irecv(dataAtOrNull(remoteRows.columnIndices, receiveOffset, receiveCount),
@@ -278,7 +285,6 @@ RemoteSparseRows exchangeRemoteSparseRowsTwoSided(const CsrMatrix& localMatrixA,
     }
     waitAll(requests, communicator);
 
-    return remoteRows;
 }
 
 CsrMatrix spgemm(const CsrMatrix& localMatrixA, RowBlock localBBlock,

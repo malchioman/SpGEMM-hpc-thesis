@@ -77,7 +77,7 @@ add_test(
             --warmup 1
             --repeats 2
             --trials 1
-            --results ${CMAKE_CURRENT_BINARY_DIR}/spgemm_distributed_smoke.tsv
+            --results ${CMAKE_CURRENT_BINARY_DIR}/spgemm_distributed_smoke_v2.tsv
 )
 add_test(
     NAME spgemm_one_sided_get_smoke
@@ -91,7 +91,7 @@ add_test(
             --warmup 1
             --repeats 2
             --trials 1
-            --results ${CMAKE_CURRENT_BINARY_DIR}/spgemm_one_sided_get_smoke.tsv
+            --results ${CMAKE_CURRENT_BINARY_DIR}/spgemm_one_sided_get_smoke_v2.tsv
 )
 add_test(
     NAME spgemm_one_sided_put_smoke
@@ -105,5 +105,44 @@ add_test(
             --warmup 1
             --repeats 2
             --trials 1
-            --results ${CMAKE_CURRENT_BINARY_DIR}/spgemm_one_sided_put_smoke.tsv
+            --results ${CMAKE_CURRENT_BINARY_DIR}/spgemm_one_sided_put_smoke_v2.tsv
 )
+
+set_tests_properties(spgemm_distributed_smoke spgemm_one_sided_get_smoke
+                     spgemm_one_sided_put_smoke PROPERTIES
+                     FAIL_REGULAR_EXPRESSION "validation=FAIL" TIMEOUT 60)
+
+foreach(variant IN ITEMS two_sided one_sided_get one_sided_put)
+    set(target spgemm_${variant})
+    foreach(case IN ITEMS rectangular empty uneven)
+        if(case STREQUAL "rectangular")
+            set(case_args --matrix-a ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rectangular_a.mtx
+                          --matrix-b ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rectangular_b.mtx)
+            set(case_ranks 4)
+        elseif(case STREQUAL "empty")
+            set(case_args --matrix ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/empty.mtx)
+            set(case_ranks 2)
+        else()
+            set(case_args --rows 19 --cols 23 --b-cols 13 --nnz-per-row 3 --b-nnz-per-row 2)
+            set(case_ranks 3)
+        endif()
+        add_test(NAME ${target}_${case}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${case_ranks}
+                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${target}> ${MPIEXEC_POSTFLAGS}
+                    ${case_args} --threads 2 --schedule dynamic --chunk 1
+                    --warmup 0 --repeats 3 --trials 2
+                    --results ${CMAKE_CURRENT_BINARY_DIR}/${target}_${case}_v2.tsv)
+        set_tests_properties(${target}_${case} PROPERTIES
+                             FAIL_REGULAR_EXPRESSION "validation=FAIL" TIMEOUT 60
+                             PROCESSORS ${case_ranks})
+    endforeach()
+    add_test(NAME ${target}_validation_failure
+        COMMAND ${CMAKE_COMMAND}
+                -DMPIEXEC=${MPIEXEC_EXECUTABLE} -DNUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+                "-DMPI_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPI_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+                -DPROGRAM=$<TARGET_FILE:${target}>
+                -DMATRIX=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/overflow.mtx
+                -DRESULTS=${CMAKE_CURRENT_BINARY_DIR}/${target}_failure_v2.tsv
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_validation_failure.cmake)
+    set_tests_properties(${target}_validation_failure PROPERTIES TIMEOUT 45 PROCESSORS 2)
+endforeach()

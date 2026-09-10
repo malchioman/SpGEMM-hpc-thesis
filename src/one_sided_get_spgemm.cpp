@@ -16,7 +16,7 @@ namespace {
 
 constexpr char kProgramName[] = "spgemm_one_sided_get";
 constexpr char kImplementation[] = "mpi_openmp_one_sided_get";
-constexpr char kDefaultResultsPath[] = "results/one_sided_get/benchmarks.tsv";
+constexpr char kDefaultResultsPath[] = "results/one_sided_get/benchmarks_v2.tsv";
 
 CsrMatrix loadMatrixA(const Options& options) {
     if (!options.matrixAPath.empty()) {
@@ -50,19 +50,18 @@ T* dataOrNull(std::vector<T>& values) {
     return values.empty() ? nullptr : values.data();
 }
 
-void unlockAndFree(MPI_Win& window, bool locked) {
+void unlockAndFree(MPI_Win& window, bool locked, MPI_Comm communicator) {
     if (window == MPI_WIN_NULL) {
         return;
     }
     if (locked) {
-        MPI_Win_unlock_all(window);
+        checkMpi(MPI_Win_unlock_all(window), "MPI_Win_unlock_all", communicator);
     }
-    MPI_Win_free(&window);
+    checkMpi(MPI_Win_free(&window), "MPI_Win_free", communicator);
 }
 
-void fetchRemoteSparseRows(const std::vector<RowBlock>& bBlocks, MPI_Win rowPtrWindow,
-                           MPI_Win columnWindow, MPI_Win valueWindow,
-                           RemoteSparseRows& remoteRows, MPI_Comm communicator) {
+std::vector<int> prepareRemoteSparseRows(const std::vector<RowBlock>& bBlocks, MPI_Win rowPtrWindow,
+                                       RemoteSparseRows& remoteRows, MPI_Comm communicator) {
     std::vector<int> rowBounds(remoteRows.plan.flatRows.size() * 2U, 0);
     for (int peer = 0; peer < static_cast<int>(bBlocks.size()); ++peer) {
         const int peerOffset = remoteRows.plan.peerOffsets[peer];
@@ -93,6 +92,12 @@ void fetchRemoteSparseRows(const std::vector<RowBlock>& bBlocks, MPI_Win rowPtrW
     remoteRows.columnIndices.assign(totalRemoteNonZeros, 0);
     remoteRows.values.assign(totalRemoteNonZeros, 0.0);
 
+    return rowBounds;
+}
+
+void fetchRemoteSparseRows(const std::vector<RowBlock>& bBlocks, const std::vector<int>& rowBounds,
+                           MPI_Win columnWindow, MPI_Win valueWindow,
+                           RemoteSparseRows& remoteRows, MPI_Comm communicator) {
     for (int peer = 0; peer < static_cast<int>(bBlocks.size()); ++peer) {
         const int peerOffset = remoteRows.plan.peerOffsets[peer];
         const auto& rows = remoteRows.plan.rowsByPeer[peer];
@@ -139,6 +144,9 @@ int main(int argc, char** argv) {
     MPI_Win columnWindow = MPI_WIN_NULL;
     MPI_Win valueWindow = MPI_WIN_NULL;
     bool windowsLocked = false;
+    // Window storage must outlive collective window destruction, including error paths.
+    CsrMatrix localMatrixB;
+    int exitCode = EXIT_SUCCESS;
 
     try {
         const Options options = parseOptions(argc, argv, kProgramName, kDefaultResultsPath);
@@ -167,8 +175,8 @@ int main(int argc, char** argv) {
         const double distributionStart = MPI_Wtime();
         CsrMatrix localMatrixA = distributeMatrix(rank == 0 ? &globalMatrixA : nullptr, outputBlocks,
                                                   rank, ranks, communicator);
-        CsrMatrix localMatrixB = distributeMatrix(rank == 0 ? &globalMatrixB : nullptr, bRowBlocks,
-                                                  rank, ranks, communicator);
+        localMatrixB = distributeMatrix(rank == 0 ? &globalMatrixB : nullptr, bRowBlocks,
+                                        rank, ranks, communicator);
         const double distributionSeconds = maxElapsed(distributionStart, communicator);
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
@@ -196,14 +204,21 @@ int main(int argc, char** argv) {
                  communicator);
         windowsLocked = true;
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
-        fetchRemoteSparseRows(bRowBlocks, rowPtrWindow, columnWindow, valueWindow, remoteBRows,
+        const std::vector<int> rowBounds =
+            prepareRemoteSparseRows(bRowBlocks, rowPtrWindow, remoteBRows, communicator);
+        checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
+        const double haloSetupEnd = MPI_Wtime();
+        fetchRemoteSparseRows(bRowBlocks, rowBounds, columnWindow, valueWindow, remoteBRows,
                               communicator);
-        const double haloSetupSeconds = maxElapsed(haloSetupStart, communicator);
+        CsrMatrix localResult =
+            spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
+        const double firstProductEnd = MPI_Wtime();
+        const double haloSetupSeconds = maxRankValue(haloSetupEnd - haloSetupStart, communicator);
+        const double firstProductSeconds = maxRankValue(firstProductEnd - haloSetupStart, communicator);
 
-        CsrMatrix localResult;
         for (int iteration = 0; iteration < options.warmup; ++iteration) {
             checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
-            fetchRemoteSparseRows(bRowBlocks, rowPtrWindow, columnWindow, valueWindow, remoteBRows,
+            fetchRemoteSparseRows(bRowBlocks, rowBounds, columnWindow, valueWindow, remoteBRows,
                                   communicator);
             localResult =
                 spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
@@ -224,7 +239,7 @@ int main(int argc, char** argv) {
             for (int repeat = 0; repeat < options.repeats; ++repeat) {
                 checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
                 const double start = MPI_Wtime();
-                fetchRemoteSparseRows(bRowBlocks, rowPtrWindow, columnWindow, valueWindow,
+                fetchRemoteSparseRows(bRowBlocks, rowBounds, columnWindow, valueWindow,
                                       remoteBRows, communicator);
                 const double exchangeEnd = MPI_Wtime();
                 localResult =
@@ -256,30 +271,30 @@ int main(int argc, char** argv) {
         if (rank == 0) {
             const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
             const double error = maxAbsoluteDifference(globalResult, reference);
+            exitCode = validationPassed(error) ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0
                                              ? floatingPointOperations / computeP90Seconds / 1.0e9
                                              : 0.0;
             appendBenchmarkResult(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
-                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
                                   gatherSeconds, computeGflops, error);
             printBenchmarkSummary(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
-                                  globalResult, distributionSeconds, haloSetupSeconds,
+                                  globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
                                   gatherSeconds, computeGflops, error);
         }
+        checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, communicator), "MPI_Bcast(validation)", communicator);
     } catch (const std::exception& error) {
-        unlockAndFree(valueWindow, windowsLocked);
-        unlockAndFree(columnWindow, windowsLocked);
-        unlockAndFree(rowPtrWindow, windowsLocked);
+        // A rank-local exception cannot safely enter collective window cleanup.
         fail(error.what(), communicator);
     }
 
-    unlockAndFree(valueWindow, windowsLocked);
-    unlockAndFree(columnWindow, windowsLocked);
-    unlockAndFree(rowPtrWindow, windowsLocked);
+    unlockAndFree(valueWindow, windowsLocked, communicator);
+    unlockAndFree(columnWindow, windowsLocked, communicator);
+    unlockAndFree(rowPtrWindow, windowsLocked, communicator);
     checkMpi(MPI_Finalize(), "MPI_Finalize", communicator);
-    return EXIT_SUCCESS;
+    return exitCode;
 }
