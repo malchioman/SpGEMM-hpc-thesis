@@ -6,6 +6,7 @@
 #include "csr_matrix.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@ struct Options {
     int repeats = 10;
     int trials = 5;
     int chunk = 64;
+    bool validate = true;
     std::string schedule = "guided";
     std::string matrixAPath;
     std::string matrixBPath;
@@ -53,19 +55,24 @@ CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlo
                           int resultCols, int rank, int ranks, MPI_Comm communicator);
 CsrMatrix serialSpgemm(const CsrMatrix& matrixA, const CsrMatrix& matrixB);
 std::int64_t scalarMultiplicationCount(const CsrMatrix& matrixA, const CsrMatrix& matrixB);
+// Returns infinity for incompatible shapes or non-finite values/differences.
 double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs);
+bool validationPassed(double maxAbsoluteError);
 double maxElapsed(double start, MPI_Comm communicator);
 double percentile90(std::vector<double> samples);
 
+// An absent maximum error denotes skipped validation in both output formats.
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
                            double haloSetupSeconds, double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
-                           double gatherSeconds, double gflops, double maxAbsoluteError);
+                           double gatherSeconds, double gflops,
+                           std::optional<double> maxAbsoluteError);
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
                            double haloSetupSeconds, double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
-                           double gatherSeconds, double computeGflops, double maxAbsoluteError);
+                           double gatherSeconds, double computeGflops,
+                           std::optional<double> maxAbsoluteError);

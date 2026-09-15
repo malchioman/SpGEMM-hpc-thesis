@@ -1,0 +1,5 @@
+%%MatrixMarket matrix coordinate real general
+% Finite inputs whose square overflows double precision.
+2 2 2
+1 2 1e200
+2 1 1e200

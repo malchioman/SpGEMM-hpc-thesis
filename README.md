@@ -21,6 +21,35 @@ variants:
 - rank 0 gathers the distributed CSR result and validates it against a serial
   SpGEMM implementation.
 
+## Source layout
+
+```text
+src/
+  common/
+    csr_matrix.hpp
+    matrix_market.cpp
+    matrix_market.hpp
+    spgemm_common.cpp
+    spgemm_common.hpp
+  baselines/
+    two_sided_spgemm.cpp
+    one_sided_get_spgemm.cpp
+    one_sided_put_spgemm.cpp
+    spgemm_exchange.cpp
+    spgemm_exchange.hpp
+  trident/
+```
+
+`common` contains CSR storage, Matrix Market input, shared MPI/benchmark helpers,
+and serial validation. It also retains the existing row-distribution utilities.
+`baselines` contains the three row-distributed SpGEMM programs, their remote-row
+exchange code, and the distributed local kernel. `trident` is reserved for the
+future CPU implementation and is currently tracked with a `.gitkeep` file.
+
+The CMake targets `matrix_market` and `spgemm_support` provide common utilities.
+`spgemm_baseline_support` depends on those utilities and adds the baseline-specific
+exchange and computation code. Executable names and run commands are unchanged.
+
 ## Build
 
 A C++17 compiler, an MPI distribution with development files (for example Open
@@ -49,12 +78,16 @@ mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a matrices/A.mtx --matrix-b m
 mpirun -np 4 ./build/spgemm_one_sided_put --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
 ```
 
-For a square matrix product `A * A`, `--matrix path/to/A.mtx` is a shorthand for
-using the same Matrix Market file as both inputs.
+Passing only `--matrix-a path/to/A.mtx` reuses the loaded A as B and computes
+`A * A`; A must be square. The shorthand `--matrix path/to/A.mtx` also uses the
+same Matrix Market file as both inputs. In both cases, the summary and TSV
+record that file as the source of both A and B. Specifying `--matrix-b` instead
+selects `A * B`, subject to the dimension compatibility rule above.
 
 The reader supports `real`, `integer`, and `pattern` fields, and recognizes the
 `general`, `symmetric`, `skew-symmetric`, and `hermitian` storage-mode tokens for
-those non-complex inputs. Synthetic inputs use `--rows` for rows of `A`, `--cols`
+those non-complex inputs. The three symmetry modes require square matrices;
+`general` inputs may be square or rectangular. Synthetic inputs use `--rows` for rows of `A`, `--cols`
 for columns of `A` and rows of `B`, `--b-cols` for columns of `B`, and separate
 nonzero controls for the two inputs.
 
@@ -71,6 +104,27 @@ reuses agreed target offsets and refreshes the sparse halo with RMA puts.
 Each execution appends a TSV row under `results/<variant>/benchmarks.tsv`. The
 file contains input shapes, input/output nonzeros, timings, throughput, and
 validation status; change the destination with `--results path/to/output.tsv`.
+
+Validation is enabled by default, runs outside the timed samples, and requires
+a maximum absolute error strictly below `1e-10`. Non-finite values in either result, including matching
+infinities, fail validation. On validation failure, the program records `FAIL`
+and all ranks return a nonzero exit code after normal MPI cleanup.
+
+Add `--no-validate` to any of the three executables to skip both the serial
+reference product and the result comparison:
+
+```bash
+mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --no-validate
+```
+
+In this mode, both the summary and TSV report `validation=SKIPPED` and
+`max_abs_error=NA`, not `PASS` or a zero error. A completed run returns success
+without certifying numerical correctness. Input checks and runtime errors remain
+active. The final result is still gathered on rank 0, and global A and B remain
+there, so this flag removes the serial validation cost but not all root-memory
+limits for large inputs. The distributed algorithm and timed regions are unchanged.
+The scaling scripts keep validation enabled unless their executable invocation
+is amended to include `--no-validate`.
 
 ## Scaling experiments
 

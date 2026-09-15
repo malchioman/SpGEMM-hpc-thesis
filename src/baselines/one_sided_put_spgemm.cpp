@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -293,9 +294,12 @@ int main(int argc, char** argv) {
         fail("MPI implementation does not provide MPI_THREAD_FUNNELED", communicator);
     }
 
+    // Keep exposed storage alive through window cleanup, including exception handling.
+    PutPlan putPlan;
     MPI_Win columnWindow = MPI_WIN_NULL;
     MPI_Win valueWindow = MPI_WIN_NULL;
     bool windowsLocked = false;
+    int validationSuccess = 0;
 
     try {
         const Options options = parseOptions(argc, argv, kProgramName, kDefaultResultsPath);
@@ -330,8 +334,8 @@ int main(int argc, char** argv) {
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
-        PutPlan putPlan = buildPutPlan(localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank],
-                                       rank, ranks, communicator);
+        putPlan = buildPutPlan(localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank],
+                               rank, ranks, communicator);
         checkMpi(MPI_Win_create(dataOrNull(putPlan.remoteBRows.columnIndices),
                                 static_cast<MPI_Aint>(putPlan.remoteBRows.columnIndices.size()) *
                                     sizeof(int),
@@ -417,8 +421,12 @@ int main(int argc, char** argv) {
         const double gatherSeconds = maxElapsed(gatherStart, communicator);
 
         if (rank == 0) {
-            const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
-            const double error = maxAbsoluteDifference(globalResult, reference);
+            std::optional<double> error;
+            if (options.validate) {
+                const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
+                error = maxAbsoluteDifference(globalResult, reference);
+            }
+            validationSuccess = (!error || validationPassed(*error)) ? 1 : 0;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0
@@ -441,6 +449,8 @@ int main(int argc, char** argv) {
 
     unlockAndFree(valueWindow, windowsLocked);
     unlockAndFree(columnWindow, windowsLocked);
+    checkMpi(MPI_Bcast(&validationSuccess, 1, MPI_INT, 0, communicator),
+             "MPI_Bcast(validation status)", communicator);
     checkMpi(MPI_Finalize(), "MPI_Finalize", communicator);
-    return EXIT_SUCCESS;
+    return validationSuccess ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -50,7 +50,7 @@ General Matrix-Matrix Multiplication implementations.
 
 ## Implementation assumptions
 
-- `A`, `B`, and `C` are stored as CSR matrices.
+- `A`, `B`, and `C` are stored as CSR matrices. The Matrix Market reader rejects nonsquare inputs declared `symmetric`, `skew-symmetric`, or `hermitian` before expanding their entries; `general` inputs may be rectangular.
 - `A` is distributed by contiguous row blocks. Each rank owns and computes the corresponding row block of `C`.
 - `B` is also distributed by contiguous row blocks. For every local nonzero `A(i,k)`, the owning rank of row `B(k,:)` is found from the `B` row partition.
 - The two-sided baseline rebuilds the remote-row request plan for each timed sample, exchanges sparse row lengths, column indices, and values with `MPI_Isend`/`MPI_Irecv`, then computes local rows of `C`.
@@ -59,4 +59,4 @@ General Matrix-Matrix Multiplication implementations.
 - RMA windows are held in passive-target `MPI_Win_lock_all` epochs and completed with `MPI_Win_flush_all`. The put variant uses a barrier and `MPI_Win_sync` before local reads of remotely written halo buffers.
 - The local SpGEMM kernel uses one accumulator per output row, sorts touched output columns, drops exact zero accumulated values, and writes the result as CSR.
 - Each timed sample is reduced to the maximum rank time. The results file stores P90 communication, computation, and end-to-end timings across samples after warmup.
-- Rank 0 gathers the distributed CSR result and validates it against a serial SpGEMM implementation.
+- Rank 0 gathers the distributed CSR result and, by default, validates it against a serial SpGEMM implementation outside the timed samples. The benchmark-specific validation policy requires a maximum absolute error strictly below `1e-10` and rejects non-finite values in either result. A failed validation is recorded as `FAIL`; its status is broadcast to all ranks, which return a nonzero exit code after normal MPI cleanup. The project-specific `--no-validate` flag skips the serial product and comparison, reports `SKIPPED` with `max_abs_error=NA`, and permits a successful exit without certifying numerical correctness. It does not disable input checks or final result gathering, nor remove global A and B from rank 0.
