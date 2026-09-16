@@ -58,6 +58,7 @@ std::int64_t scalarMultiplicationCount(const CsrMatrix& matrixA, const CsrMatrix
 // Returns infinity for incompatible shapes or non-finite values/differences.
 double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs);
 bool validationPassed(double maxAbsoluteError);
+double maxRankValue(double value, MPI_Comm communicator);
 double maxElapsed(double start, MPI_Comm communicator);
 double percentile90(std::vector<double> samples);
 
@@ -65,14 +66,16 @@ double percentile90(std::vector<double> samples);
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
-                           double haloSetupSeconds, double communicationP90Seconds,
+                           double haloSetupSeconds, double firstProductSeconds,
+                           double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops,
                            std::optional<double> maxAbsoluteError);
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
-                           double haloSetupSeconds, double communicationP90Seconds,
+                           double haloSetupSeconds, double firstProductSeconds,
+                           double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops,
                            std::optional<double> maxAbsoluteError);

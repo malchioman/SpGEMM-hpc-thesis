@@ -1,3 +1,5 @@
+file(REMOVE "${RESULTS_FILE}")
+
 execute_process(
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2
             ${MPIEXEC_PREFLAGS} "${BENCHMARK}" ${MPIEXEC_POSTFLAGS}
@@ -19,9 +21,15 @@ if(NOT output MATCHES "(^|[\r\n])validation=FAIL([\r\n]|$)")
 endif()
 
 file(STRINGS "${RESULTS_FILE}" result_lines)
+list(GET result_lines 0 header)
 list(GET result_lines -1 last_result)
+string(REPLACE "\t" ";" header_fields "${header}")
 string(REPLACE "\t" ";" result_fields "${last_result}")
-list(GET result_fields -1 validation_status)
+list(FIND header_fields "validation" validation_index)
+if(validation_index EQUAL -1)
+    message(FATAL_ERROR "Missing TSV column 'validation'.")
+endif()
+list(GET result_fields ${validation_index} validation_status)
 if(NOT validation_status STREQUAL "FAIL")
     message(FATAL_ERROR "Expected FAIL in the last TSV row, got '${validation_status}'.")
 endif()

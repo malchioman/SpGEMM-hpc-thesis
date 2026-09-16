@@ -18,6 +18,8 @@ else()
     message(FATAL_ERROR "Unknown input case: ${INPUT_CASE}")
 endif()
 
+file(REMOVE "${RESULTS_FILE}")
+
 set(original_result_size 0)
 if(EXISTS "${RESULTS_FILE}")
     file(SIZE "${RESULTS_FILE}" original_result_size)

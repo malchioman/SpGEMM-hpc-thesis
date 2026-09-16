@@ -52,9 +52,9 @@ void printUsage(const std::string& programName, const std::string& defaultResult
         << "  --nnz-per-row N      Non-zeros in each synthetic row of A (default: 16)\n"
         << "  --b-nnz-per-row N    Non-zeros in each synthetic row of B (default: 16)\n"
         << "  --threads N          OpenMP threads per MPI rank (default: 1)\n"
-        << "  --warmup N           Untimed SpGEMM repetitions before measurement (default: 2)\n"
+        << "  --warmup N           Extra untimed repetitions after the first product (default: 2)\n"
         << "  --repeats N          Timed repetitions in each trial (default: 10)\n"
-        << "  --trials N           Number of independent trials (default: 5)\n"
+        << "  --trials N           Groups of repetitions within the same MPI run (default: 5)\n"
         << "  --matrix PATH        Matrix Market input used for both A and B; must be square\n"
         << "  --matrix-a PATH      Matrix Market coordinate input for A\n"
         << "                       Without --matrix-b, requires square A and computes A*A\n"
@@ -495,6 +495,12 @@ double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs) {
         return std::numeric_limits<double>::infinity();
     }
 
+    const auto isFinite = [](double value) { return std::isfinite(value); };
+    if (!std::all_of(lhs.values.begin(), lhs.values.end(), isFinite) ||
+        !std::all_of(rhs.values.begin(), rhs.values.end(), isFinite)) {
+        return std::numeric_limits<double>::infinity();
+    }
+
     double maximum = 0.0;
     for (int row = 0; row < lhs.rows; ++row) {
         int left = lhs.rowPtr[row];
@@ -526,15 +532,19 @@ double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs) {
 }
 
 bool validationPassed(double maxAbsoluteError) {
-    return std::isfinite(maxAbsoluteError) && maxAbsoluteError < 1.0e-10;
+    return std::isfinite(maxAbsoluteError) && maxAbsoluteError >= 0.0 &&
+           maxAbsoluteError < 1.0e-10;
+}
+
+double maxRankValue(double value, MPI_Comm communicator) {
+    double maximum = 0.0;
+    checkMpi(MPI_Reduce(&value, &maximum, 1, MPI_DOUBLE, MPI_MAX, 0, communicator), "MPI_Reduce",
+             communicator);
+    return maximum;
 }
 
 double maxElapsed(double start, MPI_Comm communicator) {
-    const double elapsed = MPI_Wtime() - start;
-    double maximum = 0.0;
-    checkMpi(MPI_Reduce(&elapsed, &maximum, 1, MPI_DOUBLE, MPI_MAX, 0, communicator), "MPI_Reduce",
-             communicator);
-    return maximum;
+    return maxRankValue(MPI_Wtime() - start, communicator);
 }
 
 double percentile90(std::vector<double> samples) {
@@ -550,7 +560,8 @@ double percentile90(std::vector<double> samples) {
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
-                           double haloSetupSeconds, double communicationP90Seconds,
+                           double haloSetupSeconds, double firstProductSeconds,
+                           double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops,
                            std::optional<double> maxAbsoluteError) {
@@ -570,17 +581,32 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
         throw std::runtime_error("cannot inspect results file: " + outputPath.string());
     }
 
+    const std::string header =
+        "implementation\texperiment\tmatrix_a_source\tmatrix_b_source"
+        "\ta_rows\ta_cols\tb_rows\tb_cols\ta_nnz\tb_nnz\tc_nnz\tranks"
+        "\tthreads_per_rank\tomp_schedule\tomp_chunk\twarmup\trepeats\ttrials"
+        "\tdistribution_seconds\thalo_setup_seconds\tfirst_product_seconds"
+        "\tcommunication_p90_seconds\tcompute_p90_seconds\tend_to_end_p90_seconds"
+        "\tgather_seconds\tcompute_gflops_p90\tmax_abs_error\tvalidation\tbenchmark_protocol";
+    if (!writeHeader) {
+        std::ifstream existing(outputPath);
+        std::string existingHeader;
+        std::getline(existing, existingHeader);
+        if (!existingHeader.empty() && existingHeader.back() == '\r') {
+            existingHeader.pop_back();
+        }
+        if (existingHeader != header) {
+            throw std::runtime_error("incompatible benchmark TSV header; choose a new --results path: " +
+                                     outputPath.string());
+        }
+    }
+
     std::ofstream output(outputPath, std::ios::app);
     if (!output) {
         throw std::runtime_error("cannot write results file: " + outputPath.string());
     }
     if (writeHeader) {
-        output << "implementation\texperiment\tmatrix_a_source\tmatrix_b_source"
-               << "\ta_rows\ta_cols\tb_rows\tb_cols\ta_nnz\tb_nnz\tc_nnz\tranks"
-               << "\tthreads_per_rank\tomp_schedule\tomp_chunk\twarmup\trepeats\ttrials"
-               << "\tdistribution_seconds\thalo_setup_seconds\tcommunication_p90_seconds"
-               << "\tcompute_p90_seconds\tend_to_end_p90_seconds\tgather_seconds\tcompute_gflops_p90"
-               << "\tmax_abs_error\tvalidation\n";
+        output << header << '\n';
     }
     output << std::setprecision(17) << implementation << '\t' << options.experiment << '\t'
            << (options.matrixAPath.empty() ? "synthetic" : options.matrixAPath) << '\t'
@@ -590,24 +616,27 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
            << '\t' << matrixC.values.size() << '\t' << ranks << '\t' << options.threads << '\t'
            << options.schedule << '\t' << options.chunk << '\t' << options.warmup << '\t'
            << options.repeats << '\t' << options.trials << '\t' << distributionSeconds << '\t'
-           << haloSetupSeconds << '\t' << communicationP90Seconds << '\t' << computeP90Seconds
+           << haloSetupSeconds << '\t' << firstProductSeconds << '\t'
+           << communicationP90Seconds << '\t' << computeP90Seconds
            << '\t' << endToEndP90Seconds << '\t' << gatherSeconds << '\t' << gflops << '\t';
     if (maxAbsoluteError) {
         output << *maxAbsoluteError;
     } else {
         output << "NA";
     }
-    output << '\t' << validationStatus(maxAbsoluteError) << '\n';
+    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_v2\n";
 }
 
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
-                           double haloSetupSeconds, double communicationP90Seconds,
+                           double haloSetupSeconds, double firstProductSeconds,
+                           double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops,
                            std::optional<double> maxAbsoluteError) {
     std::cout << std::fixed << std::setprecision(6) << "implementation=" << implementation << '\n'
+              << "benchmark_protocol=prepared_halo_v2\n"
               << "ranks=" << ranks << " threads_per_rank=" << options.threads
               << " omp_schedule=" << options.schedule << " omp_chunk=" << options.chunk << '\n'
               << "experiment=" << options.experiment << " warmup=" << options.warmup
@@ -624,6 +653,7 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
               << matrixBSource(options) << '\n'
               << "distribution_seconds=" << distributionSeconds << '\n'
               << "halo_setup_seconds=" << haloSetupSeconds << '\n'
+              << "first_product_seconds=" << firstProductSeconds << '\n'
               << "communication_p90_seconds=" << communicationP90Seconds << '\n'
               << "compute_p90_seconds=" << computeP90Seconds << '\n'
               << "end_to_end_p90_seconds=" << endToEndP90Seconds << '\n'

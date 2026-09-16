@@ -17,6 +17,8 @@ else()
     message(FATAL_ERROR "Unknown input case: ${INPUT_CASE}")
 endif()
 
+file(REMOVE "${RESULTS_FILE}")
+
 execute_process(
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2
             ${MPIEXEC_PREFLAGS} "${BENCHMARK}" ${MPIEXEC_POSTFLAGS}
