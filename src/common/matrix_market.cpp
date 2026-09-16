@@ -72,12 +72,17 @@ CsrMatrix readMatrixMarket(const std::string& path) {
         }
     }
 
+    const bool mirrored = symmetry != "general";
+    if (mirrored && rows != cols) {
+        throw std::runtime_error("Matrix Market " + symmetry +
+                                 " storage requires a square matrix: " + path);
+    }
+
     struct Entry {
         int row;
         int column;
         double value;
     };
-    const bool mirrored = symmetry != "general";
     std::vector<Entry> entriesList;
     entriesList.reserve(static_cast<std::size_t>(entries) * (mirrored ? 2U : 1U));
     for (int entry = 0; entry < entries; ++entry) {

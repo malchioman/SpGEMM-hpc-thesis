@@ -8,15 +8,16 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
 
-constexpr char kProgramName[] = "spgemm_one_sided_get";
-constexpr char kImplementation[] = "mpi_openmp_one_sided_get";
-constexpr char kDefaultResultsPath[] = "results/one_sided_get/benchmarks_v2.tsv";
+constexpr char kProgramName[] = "spgemm_two_sided";
+constexpr char kImplementation[] = "mpi_openmp_two_sided";
+constexpr char kDefaultResultsPath[] = "results/two_sided/benchmarks_v2.tsv";
 
 CsrMatrix loadMatrixA(const Options& options) {
     if (!options.matrixAPath.empty()) {
@@ -45,83 +46,6 @@ void validateDimensions(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
     }
 }
 
-template <typename T>
-T* dataOrNull(std::vector<T>& values) {
-    return values.empty() ? nullptr : values.data();
-}
-
-void unlockAndFree(MPI_Win& window, bool locked, MPI_Comm communicator) {
-    if (window == MPI_WIN_NULL) {
-        return;
-    }
-    if (locked) {
-        checkMpi(MPI_Win_unlock_all(window), "MPI_Win_unlock_all", communicator);
-    }
-    checkMpi(MPI_Win_free(&window), "MPI_Win_free", communicator);
-}
-
-std::vector<int> prepareRemoteSparseRows(const std::vector<RowBlock>& bBlocks, MPI_Win rowPtrWindow,
-                                       RemoteSparseRows& remoteRows, MPI_Comm communicator) {
-    std::vector<int> rowBounds(remoteRows.plan.flatRows.size() * 2U, 0);
-    for (int peer = 0; peer < static_cast<int>(bBlocks.size()); ++peer) {
-        const int peerOffset = remoteRows.plan.peerOffsets[peer];
-        const auto& rows = remoteRows.plan.rowsByPeer[peer];
-        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
-            const int globalRow = rows[index];
-            const int localRow = globalRow - bBlocks[peer].firstRow;
-            const int slot = peerOffset + index;
-            checkMpi(MPI_Get(rowBounds.data() + static_cast<std::size_t>(2 * slot), 2, MPI_INT,
-                             peer, static_cast<MPI_Aint>(localRow), 2, MPI_INT, rowPtrWindow),
-                     "MPI_Get(B row bounds)", communicator);
-        }
-    }
-    checkMpi(MPI_Win_flush_all(rowPtrWindow), "MPI_Win_flush_all(rowPtr)", communicator);
-
-    int totalRemoteNonZeros = 0;
-    remoteRows.rowPtr.assign(remoteRows.plan.flatRows.size() + 1, 0);
-    for (int slot = 0; slot < static_cast<int>(remoteRows.plan.flatRows.size()); ++slot) {
-        const int first = rowBounds[static_cast<std::size_t>(2 * slot)];
-        const int last = rowBounds[static_cast<std::size_t>(2 * slot + 1)];
-        if (first < 0 || last < first) {
-            fail("received invalid CSR row bounds from a remote B row", communicator);
-        }
-        remoteRows.rowPtr[slot] = totalRemoteNonZeros;
-        totalRemoteNonZeros += last - first;
-        remoteRows.rowPtr[slot + 1] = totalRemoteNonZeros;
-    }
-    remoteRows.columnIndices.assign(totalRemoteNonZeros, 0);
-    remoteRows.values.assign(totalRemoteNonZeros, 0.0);
-
-    return rowBounds;
-}
-
-void fetchRemoteSparseRows(const std::vector<RowBlock>& bBlocks, const std::vector<int>& rowBounds,
-                           MPI_Win columnWindow, MPI_Win valueWindow,
-                           RemoteSparseRows& remoteRows, MPI_Comm communicator) {
-    for (int peer = 0; peer < static_cast<int>(bBlocks.size()); ++peer) {
-        const int peerOffset = remoteRows.plan.peerOffsets[peer];
-        const auto& rows = remoteRows.plan.rowsByPeer[peer];
-        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
-            const int slot = peerOffset + index;
-            const int receiveOffset = remoteRows.rowPtr[slot];
-            const int count = remoteRows.rowPtr[slot + 1] - remoteRows.rowPtr[slot];
-            if (count == 0) {
-                continue;
-            }
-
-            const int remoteOffset = rowBounds[static_cast<std::size_t>(2 * slot)];
-            checkMpi(MPI_Get(remoteRows.columnIndices.data() + receiveOffset, count, MPI_INT, peer,
-                             static_cast<MPI_Aint>(remoteOffset), count, MPI_INT, columnWindow),
-                     "MPI_Get(B row columns)", communicator);
-            checkMpi(MPI_Get(remoteRows.values.data() + receiveOffset, count, MPI_DOUBLE, peer,
-                             static_cast<MPI_Aint>(remoteOffset), count, MPI_DOUBLE, valueWindow),
-                     "MPI_Get(B row values)", communicator);
-        }
-    }
-    checkMpi(MPI_Win_flush_all(columnWindow), "MPI_Win_flush_all(columns)", communicator);
-    checkMpi(MPI_Win_flush_all(valueWindow), "MPI_Win_flush_all(values)", communicator);
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -140,14 +64,7 @@ int main(int argc, char** argv) {
         fail("MPI implementation does not provide MPI_THREAD_FUNNELED", communicator);
     }
 
-    MPI_Win rowPtrWindow = MPI_WIN_NULL;
-    MPI_Win columnWindow = MPI_WIN_NULL;
-    MPI_Win valueWindow = MPI_WIN_NULL;
-    bool windowsLocked = false;
-    // Window storage must outlive collective window destruction, including error paths.
-    CsrMatrix localMatrixB;
     int exitCode = EXIT_SUCCESS;
-
     try {
         const Options options = parseOptions(argc, argv, kProgramName, kDefaultResultsPath);
         omp_set_dynamic(0);
@@ -175,53 +92,30 @@ int main(int argc, char** argv) {
         const double distributionStart = MPI_Wtime();
         CsrMatrix localMatrixA = distributeMatrix(rank == 0 ? &globalMatrixA : nullptr, outputBlocks,
                                                   rank, ranks, communicator);
-        localMatrixB = distributeMatrix(rank == 0 ? &globalMatrixB : nullptr, bRowBlocks,
-                                        rank, ranks, communicator);
+        CsrMatrix localMatrixB = distributeMatrix(rank == 0 ? &globalMatrixB : nullptr, bRowBlocks,
+                                                  rank, ranks, communicator);
         const double distributionSeconds = maxElapsed(distributionStart, communicator);
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
-        RemoteSparseRows remoteBRows =
-            makeRemoteSparseRows(buildRemoteRowPlan(localMatrixA, bRowBlocks, rank, communicator));
-        checkMpi(MPI_Win_create(dataOrNull(localMatrixB.rowPtr),
-                                static_cast<MPI_Aint>(localMatrixB.rowPtr.size()) * sizeof(int),
-                                sizeof(int), MPI_INFO_NULL, communicator, &rowPtrWindow),
-                 "MPI_Win_create(rowPtr)", communicator);
-        checkMpi(MPI_Win_create(dataOrNull(localMatrixB.columnIndices),
-                                static_cast<MPI_Aint>(localMatrixB.columnIndices.size()) *
-                                    sizeof(int),
-                                sizeof(int), MPI_INFO_NULL, communicator, &columnWindow),
-                 "MPI_Win_create(columns)", communicator);
-        checkMpi(MPI_Win_create(dataOrNull(localMatrixB.values),
-                                static_cast<MPI_Aint>(localMatrixB.values.size()) * sizeof(double),
-                                sizeof(double), MPI_INFO_NULL, communicator, &valueWindow),
-                 "MPI_Win_create(values)", communicator);
-        checkMpi(MPI_Win_lock_all(MPI_MODE_NOCHECK, rowPtrWindow), "MPI_Win_lock_all(rowPtr)",
-                 communicator);
-        checkMpi(MPI_Win_lock_all(MPI_MODE_NOCHECK, columnWindow), "MPI_Win_lock_all(columns)",
-                 communicator);
-        checkMpi(MPI_Win_lock_all(MPI_MODE_NOCHECK, valueWindow), "MPI_Win_lock_all(values)",
-                 communicator);
-        windowsLocked = true;
-        checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
-        const std::vector<int> rowBounds =
-            prepareRemoteSparseRows(bRowBlocks, rowPtrWindow, remoteBRows, communicator);
+        TwoSidedPlan exchangePlan = buildTwoSidedPlan(
+            localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank], rank, ranks, communicator);
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupEnd = MPI_Wtime();
-        fetchRemoteSparseRows(bRowBlocks, rowBounds, columnWindow, valueWindow, remoteBRows,
-                              communicator);
+        exchangeRemoteSparseRowsTwoSided(localMatrixB, bRowBlocks[rank], exchangePlan, rank,
+                                         communicator);
         CsrMatrix localResult =
-            spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
+            spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, exchangePlan.remoteRows, communicator);
         const double firstProductEnd = MPI_Wtime();
         const double haloSetupSeconds = maxRankValue(haloSetupEnd - haloSetupStart, communicator);
         const double firstProductSeconds = maxRankValue(firstProductEnd - haloSetupStart, communicator);
 
         for (int iteration = 0; iteration < options.warmup; ++iteration) {
             checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
-            fetchRemoteSparseRows(bRowBlocks, rowBounds, columnWindow, valueWindow, remoteBRows,
-                                  communicator);
+            exchangeRemoteSparseRowsTwoSided(localMatrixB, bRowBlocks[rank], exchangePlan, rank,
+                                             communicator);
             localResult =
-                spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
+                spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, exchangePlan.remoteRows, communicator);
         }
 
         std::vector<double> computeSamples;
@@ -235,15 +129,16 @@ int main(int argc, char** argv) {
             endToEndSamples.reserve(sampleCount);
         }
 
+        checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         for (int trial = 0; trial < options.trials; ++trial) {
             for (int repeat = 0; repeat < options.repeats; ++repeat) {
                 checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
                 const double start = MPI_Wtime();
-                fetchRemoteSparseRows(bRowBlocks, rowBounds, columnWindow, valueWindow,
-                                      remoteBRows, communicator);
+                exchangeRemoteSparseRowsTwoSided(localMatrixB, bRowBlocks[rank], exchangePlan, rank,
+                                                 communicator);
                 const double exchangeEnd = MPI_Wtime();
                 localResult =
-                    spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, remoteBRows, communicator);
+                    spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, exchangePlan.remoteRows, communicator);
                 const double end = MPI_Wtime();
                 const double localTimings[3] = {exchangeEnd - start, end - exchangeEnd, end - start};
                 double maxTimings[3] = {};
@@ -269,9 +164,12 @@ int main(int argc, char** argv) {
         const double gatherSeconds = maxElapsed(gatherStart, communicator);
 
         if (rank == 0) {
-            const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
-            const double error = maxAbsoluteDifference(globalResult, reference);
-            exitCode = validationPassed(error) ? EXIT_SUCCESS : EXIT_FAILURE;
+            std::optional<double> error;
+            if (options.validate) {
+                const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
+                error = maxAbsoluteDifference(globalResult, reference);
+            }
+            exitCode = (!error || validationPassed(*error)) ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0
@@ -288,13 +186,9 @@ int main(int argc, char** argv) {
         }
         checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, communicator), "MPI_Bcast(validation)", communicator);
     } catch (const std::exception& error) {
-        // A rank-local exception cannot safely enter collective window cleanup.
         fail(error.what(), communicator);
     }
 
-    unlockAndFree(valueWindow, windowsLocked, communicator);
-    unlockAndFree(columnWindow, windowsLocked, communicator);
-    unlockAndFree(rowPtrWindow, windowsLocked, communicator);
     checkMpi(MPI_Finalize(), "MPI_Finalize", communicator);
     return exitCode;
 }

@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -293,11 +294,11 @@ int main(int argc, char** argv) {
         fail("MPI implementation does not provide MPI_THREAD_FUNNELED", communicator);
     }
 
+    // Keep exposed storage alive through window cleanup, including exception handling.
+    PutPlan putPlan;
     MPI_Win columnWindow = MPI_WIN_NULL;
     MPI_Win valueWindow = MPI_WIN_NULL;
     bool windowsLocked = false;
-    // Keep exposed halo storage alive until MPI_Win_free has returned.
-    PutPlan putPlan;
     int exitCode = EXIT_SUCCESS;
 
     try {
@@ -424,9 +425,12 @@ int main(int argc, char** argv) {
         const double gatherSeconds = maxElapsed(gatherStart, communicator);
 
         if (rank == 0) {
-            const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
-            const double error = maxAbsoluteDifference(globalResult, reference);
-            exitCode = validationPassed(error) ? EXIT_SUCCESS : EXIT_FAILURE;
+            std::optional<double> error;
+            if (options.validate) {
+                const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
+                error = maxAbsoluteDifference(globalResult, reference);
+            }
+            exitCode = (!error || validationPassed(*error)) ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0

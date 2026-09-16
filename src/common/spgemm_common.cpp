@@ -26,6 +26,23 @@ constexpr int kResultRowPtrTag = 301;
 constexpr int kResultColumnTag = 302;
 constexpr int kResultValueTag = 303;
 
+std::string matrixBSource(const Options& options) {
+    if (!options.matrixBPath.empty()) {
+        return options.matrixBPath;
+    }
+    if (!options.matrixAPath.empty()) {
+        return options.matrixAPath;
+    }
+    return "synthetic";
+}
+
+const char* validationStatus(std::optional<double> maxAbsoluteError) {
+    if (!maxAbsoluteError) {
+        return "SKIPPED";
+    }
+    return validationPassed(*maxAbsoluteError) ? "PASS" : "FAIL";
+}
+
 void printUsage(const std::string& programName, const std::string& defaultResultsPath) {
     std::cout
         << "Usage: " << programName << " [options]\n"
@@ -40,7 +57,9 @@ void printUsage(const std::string& programName, const std::string& defaultResult
         << "  --trials N           Groups of repetitions within the same MPI run (default: 5)\n"
         << "  --matrix PATH        Matrix Market input used for both A and B; must be square\n"
         << "  --matrix-a PATH      Matrix Market coordinate input for A\n"
+        << "                       Without --matrix-b, requires square A and computes A*A\n"
         << "  --matrix-b PATH      Matrix Market coordinate input for B\n"
+        << "  --no-validate        Skip serial reference and result comparison (default: validate)\n"
         << "  --results PATH       TSV output path (default: " << defaultResultsPath << ")\n"
         << "  --experiment TAG     Experiment label stored in the TSV (default: manual)\n"
         << "  --schedule NAME      OpenMP schedule: static, dynamic, guided, auto (default: guided)\n"
@@ -182,6 +201,10 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
         if (argument == "--help") {
             printUsage(programName, defaultResultsPath);
             std::exit(EXIT_SUCCESS);
+        }
+        if (argument == "--no-validate") {
+            options.validate = false;
+            continue;
         }
         if (index + 1 == argc) {
             throw std::invalid_argument("missing value for " + argument);
@@ -486,18 +509,23 @@ double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs) {
         const int rightEnd = rhs.rowPtr[row + 1];
 
         while (left < leftEnd || right < rightEnd) {
+            double difference = 0.0;
             if (right == rightEnd ||
                 (left < leftEnd && lhs.columnIndices[left] < rhs.columnIndices[right])) {
-                maximum = std::max(maximum, std::abs(lhs.values[left]));
+                difference = std::abs(lhs.values[left]);
                 ++left;
             } else if (left == leftEnd || rhs.columnIndices[right] < lhs.columnIndices[left]) {
-                maximum = std::max(maximum, std::abs(rhs.values[right]));
+                difference = std::abs(rhs.values[right]);
                 ++right;
             } else {
-                maximum = std::max(maximum, std::abs(lhs.values[left] - rhs.values[right]));
+                difference = std::abs(lhs.values[left] - rhs.values[right]);
                 ++left;
                 ++right;
             }
+            if (!std::isfinite(difference)) {
+                return std::numeric_limits<double>::infinity();
+            }
+            maximum = std::max(maximum, difference);
         }
     }
     return maximum;
@@ -535,7 +563,8 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
                            double haloSetupSeconds, double firstProductSeconds,
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
-                           double gatherSeconds, double gflops, double maxAbsoluteError) {
+                           double gatherSeconds, double gflops,
+                           std::optional<double> maxAbsoluteError) {
     const std::filesystem::path outputPath(options.resultsPath);
     const std::filesystem::path parent = outputPath.parent_path();
     std::error_code error;
@@ -581,7 +610,7 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
     }
     output << std::setprecision(17) << implementation << '\t' << options.experiment << '\t'
            << (options.matrixAPath.empty() ? "synthetic" : options.matrixAPath) << '\t'
-           << (options.matrixBPath.empty() ? "synthetic" : options.matrixBPath) << '\t'
+           << matrixBSource(options) << '\t'
            << matrixA.rows << '\t' << matrixA.cols << '\t' << matrixB.rows << '\t'
            << matrixB.cols << '\t' << matrixA.values.size() << '\t' << matrixB.values.size()
            << '\t' << matrixC.values.size() << '\t' << ranks << '\t' << options.threads << '\t'
@@ -589,9 +618,13 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
            << options.repeats << '\t' << options.trials << '\t' << distributionSeconds << '\t'
            << haloSetupSeconds << '\t' << firstProductSeconds << '\t'
            << communicationP90Seconds << '\t' << computeP90Seconds
-           << '\t' << endToEndP90Seconds << '\t' << gatherSeconds << '\t' << gflops << '\t'
-           << maxAbsoluteError << '\t' << (validationPassed(maxAbsoluteError) ? "PASS" : "FAIL")
-           << "\tprepared_halo_v2\n";
+           << '\t' << endToEndP90Seconds << '\t' << gatherSeconds << '\t' << gflops << '\t';
+    if (maxAbsoluteError) {
+        output << *maxAbsoluteError;
+    } else {
+        output << "NA";
+    }
+    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_v2\n";
 }
 
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
@@ -600,7 +633,8 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
                            double haloSetupSeconds, double firstProductSeconds,
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
-                           double gatherSeconds, double computeGflops, double maxAbsoluteError) {
+                           double gatherSeconds, double computeGflops,
+                           std::optional<double> maxAbsoluteError) {
     std::cout << std::fixed << std::setprecision(6) << "implementation=" << implementation << '\n'
               << "benchmark_protocol=prepared_halo_v2\n"
               << "ranks=" << ranks << " threads_per_rank=" << options.threads
@@ -616,7 +650,7 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
               << "matrix_a_source="
               << (options.matrixAPath.empty() ? "synthetic" : options.matrixAPath) << '\n'
               << "matrix_b_source="
-              << (options.matrixBPath.empty() ? "synthetic" : options.matrixBPath) << '\n'
+              << matrixBSource(options) << '\n'
               << "distribution_seconds=" << distributionSeconds << '\n'
               << "halo_setup_seconds=" << haloSetupSeconds << '\n'
               << "first_product_seconds=" << firstProductSeconds << '\n'
@@ -625,7 +659,13 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
               << "end_to_end_p90_seconds=" << endToEndP90Seconds << '\n'
               << "gather_seconds=" << gatherSeconds << '\n'
               << "compute_gflops=" << computeGflops << '\n'
-              << "max_abs_error=" << maxAbsoluteError << '\n'
-              << "validation=" << (validationPassed(maxAbsoluteError) ? "PASS" : "FAIL") << '\n'
+              << "max_abs_error=";
+    if (maxAbsoluteError) {
+        std::cout << *maxAbsoluteError;
+    } else {
+        std::cout << "NA";
+    }
+    std::cout << '\n'
+              << "validation=" << validationStatus(maxAbsoluteError) << '\n'
               << "results_file=" << options.resultsPath << '\n';
 }
