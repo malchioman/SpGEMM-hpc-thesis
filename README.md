@@ -164,8 +164,9 @@ without certifying numerical correctness. Input checks and runtime errors remain
 active. The final result is still gathered on rank 0, and global A and B remain
 there, so this flag removes the serial validation cost but not all root-memory
 limits for large inputs. The distributed algorithm and timed regions are unchanged.
-The scaling scripts keep validation enabled unless their executable invocation
-is amended to include `--no-validate`.
+The baseline scaling scripts keep validation enabled unless their executable
+invocation is amended to include `--no-validate`. Trident scripts expose the
+equivalent setting through `VALIDATE=0`.
 
 ## Scaling experiments
 
@@ -173,17 +174,17 @@ Strong scaling keeps the input matrices and threads per rank fixed while varying
 the number of ranks. With one square Matrix Market matrix:
 
 ```bash
-RANKS="1 2 4 8" THREADS=8 bash scripts/run_strong_scaling.sh matrices/bcsstk18.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/run_strong_scaling_one_sided_get.sh matrices/bcsstk18.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/run_strong_scaling_one_sided_put.sh matrices/bcsstk18.mtx
+RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling.sh matrices/bcsstk18.mtx
+RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_get.sh matrices/bcsstk18.mtx
+RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_put.sh matrices/bcsstk18.mtx
 ```
 
 With two compatible Matrix Market matrices:
 
 ```bash
-RANKS="1 2 4 8" THREADS=8 bash scripts/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/run_strong_scaling_one_sided_get.sh matrices/A.mtx matrices/B.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/run_strong_scaling_one_sided_put.sh matrices/A.mtx matrices/B.mtx
+RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
+RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_get.sh matrices/A.mtx matrices/B.mtx
+RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_put.sh matrices/A.mtx matrices/B.mtx
 ```
 
 Weak scaling uses synthetic matrices and increases global dimensions in
@@ -192,19 +193,40 @@ proportion to the number of ranks:
 ```bash
 RANKS="1 2 4 8" THREADS=8 ROWS_PER_RANK=4096 COLS_PER_RANK=4096 \
   B_COLS_PER_RANK=4096 NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/run_weak_scaling.sh
+  bash scripts/baselines/run_weak_scaling.sh
 RANKS="1 2 4 8" THREADS=8 ROWS_PER_RANK=4096 COLS_PER_RANK=4096 \
   B_COLS_PER_RANK=4096 NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/run_weak_scaling_one_sided_get.sh
+  bash scripts/baselines/run_weak_scaling_one_sided_get.sh
 RANKS="1 2 4 8" THREADS=8 ROWS_PER_RANK=4096 COLS_PER_RANK=4096 \
   B_COLS_PER_RANK=4096 NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/run_weak_scaling_one_sided_put.sh
+  bash scripts/baselines/run_weak_scaling_one_sided_put.sh
 ```
 
 The scaling scripts set the `experiment` field automatically. Unless `RESULTS`
 is overridden, the two-sided scripts write to `results/two_sided/benchmarks_v2.tsv`,
 the get wrappers write to `results/one_sided_get/benchmarks_v2.tsv`, and the put
 wrappers write to `results/one_sided_put/benchmarks_v2.tsv`.
+
+### Trident scripts
+
+The existing scripts now live in `scripts/baselines/`. Dedicated Trident scripts
+live in `scripts/trident/`, with shared launch settings in `common.sh`. They use
+Open MPI and vary square physical-node counts while keeping ranks per node and
+OpenMP threads explicit:
+
+```bash
+NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
+NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_weak_scaling.sh
+bash scripts/trident/run_local_check.sh
+```
+
+Physical experiments require a suitable allocation or `HOSTFILE`; the local
+check uses logical nodes on localhost and is not a scaling measurement.
+Set `DRY_RUN=1` to preview commands. Validation is enabled by default.
+See [experiment scripts](scripts/README.md) for all settings, separate result
+paths, and the weak-scaling input model.
 
 The implementations' technical and scientific sources are listed in
 [`docs/sources.md`](docs/sources.md), with BibTeX citations in

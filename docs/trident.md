@@ -79,6 +79,12 @@ when interpreting comparisons with the paper or later asynchronous variants.
 
 ## Running
 
+Dedicated Open MPI scripts for strong scaling, weak scaling, and a localhost
+correctness check are in `scripts/trident/`. See the
+[script guide](../scripts/README.md) for node placement, environment variables,
+dry runs, and separate result paths. Baseline scripts remain separate under
+`scripts/baselines/`.
+
 Build using the root CMake project. Example for one physical node:
 
 ```bash
