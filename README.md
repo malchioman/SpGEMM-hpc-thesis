@@ -4,8 +4,9 @@ Repository for a thesis on CPU-distributed Sparse General Matrix-Matrix
 Multiplication (SpGEMM), computing `C = A * B` with `A`, `B`, and `C` stored as
 sparse CSR matrices.
 
-The corrected implementation family is `MPI + OpenMP` with three communication
-variants:
+The repository contains three row-distributed `MPI + OpenMP` SpGEMM baselines
+and a first hierarchical CPU Trident variant, `trident_two_sided`.
+The baselines use the following communication variants:
 
 - `A` is distributed by contiguous row blocks; each rank computes the matching
   row block of `C`;
@@ -38,17 +39,29 @@ src/
     spgemm_exchange.cpp
     spgemm_exchange.hpp
   trident/
+    common/
+    two_sided/
 ```
 
 `common` contains CSR storage, Matrix Market input, shared MPI/benchmark helpers,
 and serial validation. It also retains the existing row-distribution utilities.
 `baselines` contains the three row-distributed SpGEMM programs, their remote-row
-exchange code, and the distributed local kernel. `trident` is reserved for the
-future CPU implementation and is currently tracked with a `.gitkeep` file.
+exchange code, and the distributed local kernel. `trident/common` contains the
+hierarchical process grid, partitioning, static-Cannon stage plan, CPU kernel,
+and benchmark driver shared by Trident variants. `trident/two_sided` contains the
+first intra-node communication backend and its executable entry point.
 
 The CMake targets `matrix_market` and `spgemm_support` provide common utilities.
 `spgemm_baseline_support` depends on those utilities and adds the baseline-specific
 exchange and computation code. Executable names and run commands are unchanged.
+
+`trident_support` shares the existing common utilities but is independent of the
+baseline halo implementation. `trident_two_sided` uses a 2D grid of physical nodes
+and 1D row slices inside each node, with `MPI_Isend`/`MPI_Irecv` both between and
+within nodes. This initial version is staged, without the GPU original's request
+queues or communication/computation overlap. See [Trident CPU](docs/trident.md)
+for source provenance, exact scope, cluster/local commands, timing definitions,
+and the shared structure intended for subsequent variants.
 
 ## Build
 
@@ -91,7 +104,7 @@ those non-complex inputs. The three symmetry modes require square matrices;
 for columns of `A` and rows of `B`, `--b-cols` for columns of `B`, and separate
 nonzero controls for the two inputs.
 
-All three executables use the `prepared_halo_v2` benchmark protocol. With fixed
+All three baseline executables use the `prepared_halo_v2` benchmark protocol. With fixed
 input sparsity, they prepare requests, row lengths, offsets, and communication
 buffers once. Every subsequent product transfers column indices and values
 again. Two-sided communication includes packing the outgoing rows; GET and PUT
@@ -128,15 +141,17 @@ Validation checks the final product against serial SpGEMM with maximum absolute
 error below `1e-10`. NaN and infinity always fail. A validation failure is recorded
 as `FAIL` and returns a nonzero exit status on every rank. Rank 0 still holds the
 complete inputs and final result for validation; this limits large-scale runs.
-The tests cover numerical validation, all three transports, rectangular and
-empty matrices, uneven partitions, ranks without rows, and multiple OpenMP threads.
+The tests cover numerical validation, the three baseline transports, rectangular
+and empty matrices, uneven partitions, ranks without rows, and multiple OpenMP
+threads. Trident adds hierarchical topology tests and independent dense-product
+checks, including cancellation and repeated products with changed input payloads.
 
 Validation is enabled by default, runs outside the timed samples, and requires
 a maximum absolute error strictly below `1e-10`. Non-finite values in either result, including matching
 infinities, fail validation. On validation failure, the program records `FAIL`
 and all ranks return a nonzero exit code after normal MPI cleanup.
 
-Add `--no-validate` to any of the three executables to skip both the serial
+Add `--no-validate` to any baseline or Trident executable to skip both the serial
 reference product and the result comparison:
 
 ```bash
