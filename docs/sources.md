@@ -37,7 +37,19 @@ General Matrix-Matrix Multiplication implementations.
 ## SpGEMM literature
 
 - F. G. Gustavson, [Two Fast Algorithms for Sparse Matrices: Multiplication and Permuted Transposition](https://doi.org/10.1145/355791.355796), ACM Transactions on Mathematical Software, 1978. Classical row-wise sparse-matrix multiplication reference; the local kernel follows this accumulator-based style.
-- A. Buluç and J. R. Gilbert, [Parallel Sparse Matrix-Matrix Multiplication and Indexing: Implementation and Experiments](https://doi.org/10.1137/110848244), SIAM Journal on Scientific Computing, 2012. Context for distributed-memory SpGEMM as a sparse linear algebra primitive and for the cost of sparse data movement; this repository uses a simpler one-dimensional row distribution rather than their two-dimensional distribution.
+- A. Buluç and J. R. Gilbert, [Parallel Sparse Matrix-Matrix Multiplication and Indexing: Implementation and Experiments](https://doi.org/10.1137/110848244), SIAM Journal on Scientific Computing, 2012. Context for distributed-memory SpGEMM and sparse data movement. The three baselines use one-dimensional row distribution; the new hierarchical variant follows Trident, documented separately below.
+
+## Trident CPU sources
+
+- J. Bellavita, L. Pichetti, T. Pasquali, F. Vella, and G. Guidi, *Communication-Avoiding SpGEMM via Trident Partitioning on Hierarchical GPU Interconnects*, ICS 2026. The supplied paper's Sections 3.2-3.3 and Algorithms 1-2 support the coarse 2D partition, intra-node 1D row slices, staggered static-owner schedule, local B aggregation and C-stationary updates.
+- [Official Trident implementation at c37debac](https://github.com/HicrestLaboratory/Trident/tree/c37debaccc58b72859f1837f260900a40094848c), inspected 2026-09-16. `LocalSpGEMMTask`, `TaskQueue`, `TileHolder::node_allgather` and `hns_spgemm_async` provide the corresponding implementation reference. [The pinned distributed_mmio submodule](https://github.com/HicrestLaboratory/distributed_mmio/tree/2e7c9b3c3205f4f019269b155f9381c8c4974b43) provides the hierarchical ownership/indexing reference.
+- MPI 4.1 also supports `MPI_Comm_dup`, `MPI_Comm_split`, `MPI_Comm_split_type` with `MPI_COMM_TYPE_SHARED`, and `MPI_Comm_free` used by the CPU topology layer. The Trident two-sided backend implements node-local allgather semantics with explicit point-to-point messages.
+
+The new code is a CPU reimplementation of these algorithmic components, not a
+direct copy of the GPU source. [The provenance mapping and differences](trident.md)
+document the changed range splitting, actual-node discovery, OpenMP kernel,
+staged two-sided inter-node schedule, and lack of request queues, work stealing,
+and overlap. The Trident paper is not evidence for performance of this CPU code.
 
 ## Hybrid MPI/OpenMP programming
 
@@ -48,7 +60,7 @@ General Matrix-Matrix Multiplication implementations.
 - T. Hoefler et al., [Remote Memory Access Programming in MPI-3](https://doi.org/10.1145/2780584), ACM Transactions on Parallel Computing, 2015. Background for passive-target RMA epochs, synchronization, and memory model considerations used by the one-sided variants.
 - J. Dinan et al., [An Implementation and Evaluation of the MPI 3.0 One-Sided Communication Interface](https://doi.org/10.1002/cpe.3758), Concurrency and Computation: Practice and Experience, 2016. Implementation and performance context for interpreting the RMA variants; not a source for repository-specific code.
 
-## Implementation assumptions
+## Baseline implementation assumptions
 
 - `A`, `B`, and `C` are stored as CSR matrices. The Matrix Market reader rejects nonsquare inputs declared `symmetric`, `skew-symmetric`, or `hermitian` before expanding their entries; `general` inputs may be rectangular.
 - `A` is distributed by contiguous row blocks. Each rank owns and computes the corresponding row block of `C`.
@@ -60,3 +72,7 @@ General Matrix-Matrix Multiplication implementations.
 - The local SpGEMM kernel uses one accumulator per output row, sorts touched output columns, drops exact zero accumulated values, and writes the result as CSR.
 - All variants use the `prepared_halo_v2` protocol for fixed sparsity: setup and the first product including setup are timed separately from subsequent products reusing the plan. Each duration is reduced to the maximum rank time. The results file stores P90 communication, computation, and end-to-end timings across repeated products after warmup. The first-product measurement is a single sample, not a P90.
 - Rank 0 gathers the distributed CSR result and, by default, validates it against a serial SpGEMM implementation outside the timed samples. The benchmark-specific validation policy requires a maximum absolute error strictly below `1e-10` and rejects non-finite values in either result. A failed validation is recorded as `FAIL`; its status is broadcast to all ranks, which return a nonzero exit code after normal MPI cleanup. The project-specific `--no-validate` flag skips the serial product and comparison, reports `SKIPPED` with `max_abs_error=NA`, and permits a successful exit without certifying numerical correctness. It does not disable input checks or final result gathering, nor remove global A and B from rank 0.
+
+Trident retains the input and validation policies above but uses different
+partitioning, payloads and timing protocol (`trident_staged_csr_v1`); see
+[Trident CPU](trident.md). The baseline halo assumptions do not describe Trident.

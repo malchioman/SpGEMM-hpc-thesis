@@ -49,6 +49,25 @@ add_baseline_executable(spgemm_two_sided src/baselines/two_sided_spgemm.cpp)
 add_baseline_executable(spgemm_one_sided_get src/baselines/one_sided_get_spgemm.cpp)
 add_baseline_executable(spgemm_one_sided_put src/baselines/one_sided_put_spgemm.cpp)
 
+add_library(trident_support STATIC
+    src/trident/common/process_grid.cpp
+    src/trident/common/matrix_blocks.cpp
+    src/trident/common/execution.cpp
+    src/trident/common/benchmark.cpp
+)
+target_include_directories(trident_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/common)
+target_link_libraries(trident_support PUBLIC spgemm_support)
+enable_project_warnings(trident_support)
+
+add_library(trident_two_sided_support STATIC src/trident/two_sided/intra_node_exchange.cpp)
+target_include_directories(trident_two_sided_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/two_sided)
+target_link_libraries(trident_two_sided_support PUBLIC trident_support)
+enable_project_warnings(trident_two_sided_support)
+
+add_executable(trident_two_sided src/trident/two_sided/main_two_sided.cpp)
+target_link_libraries(trident_two_sided PRIVATE trident_two_sided_support)
+enable_project_warnings(trident_two_sided)
+
 add_executable(matrix_market_smoke
     tests/matrix_market_smoke.cpp
 )
@@ -150,7 +169,12 @@ set_tests_properties(spgemm_distributed_smoke spgemm_one_sided_get_smoke
                      spgemm_one_sided_put_smoke PROPERTIES
                      FAIL_REGULAR_EXPRESSION "validation=FAIL" TIMEOUT 60)
 
-foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put)
+foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided)
+    if(target_name STREQUAL "trident_two_sided")
+        set(expected_protocol trident_staged_csr_v1)
+    else()
+        set(expected_protocol prepared_halo_v2)
+    endif()
     foreach(case IN ITEMS rectangular empty uneven)
         if(case STREQUAL "rectangular")
             set(case_args --matrix-a ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rectangular_a.mtx
@@ -180,6 +204,7 @@ foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_si
                 -DPROGRAM=$<TARGET_FILE:${target_name}>
                 -DMATRIX=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/overflow.mtx
                 -DRESULTS=${CMAKE_CURRENT_BINARY_DIR}/${target_name}_failure_v2.tsv
+                -DEXPECTED_PROTOCOL=${expected_protocol}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_validation_failure.cmake)
     set_tests_properties(${target_name}_validation_failure_v2 PROPERTIES TIMEOUT 45 PROCESSORS 2)
 
@@ -229,3 +254,5 @@ foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_si
         set_tests_properties(${target_name}_matrix_sources_${input_case} PROPERTIES TIMEOUT 30)
     endforeach()
 endforeach()
+
+include(tests/trident_tests.cmake)
