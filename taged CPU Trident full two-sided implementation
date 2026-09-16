@@ -1,0 +1,22 @@
+ CMakeLists.txt                                |  29 [32m+++[m[31m-[m
+ README.md                                     |  31 [32m+++[m[31m-[m
+ docs/references.bib                           |  11 [32m++[m
+ docs/sources.md                               |  20 [32m++[m[31m-[m
+ docs/trident.md                               | 171 [32m++++++++++++++++++++[m
+ src/trident/.gitkeep                          |   1 [31m-[m
+ src/trident/common/benchmark.cpp              | 224 [32m++++++++++++++++++++++++++[m
+ src/trident/common/benchmark.hpp              |  13 [32m++[m
+ src/trident/common/execution.cpp              | 155 [32m++++++++++++++++++[m
+ src/trident/common/execution.hpp              |  64 [32m++++++++[m
+ src/trident/common/matrix_blocks.cpp          | 185 [32m+++++++++++++++++++++[m
+ src/trident/common/matrix_blocks.hpp          |  32 [32m++++[m
+ src/trident/common/process_grid.cpp           |  78 [32m+++++++++[m
+ src/trident/common/process_grid.hpp           |  31 [32m++++[m
+ src/trident/two_sided/intra_node_exchange.cpp |  58 [32m+++++++[m
+ src/trident/two_sided/intra_node_exchange.hpp |  16 [32m++[m
+ src/trident/two_sided/main_two_sided.cpp      |  15 [32m++[m
+ tests/check_trident_cli.cmake                 |  76 [32m+++++++++[m
+ tests/check_validation_failure.cmake          |  28 [32m+++[m[31m-[m
+ tests/trident_correctness.cpp                 | 132 [32m+++++++++++++++[m
+ tests/trident_tests.cmake                     |  42 [32m+++++[m
+ 21 files changed, 1396 insertions(+), 16 deletions(-)

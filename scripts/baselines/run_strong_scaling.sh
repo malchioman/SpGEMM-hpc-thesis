@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "Usage: bash scripts/run_strong_scaling.sh <matrix-a.mtx> [matrix-b.mtx]" >&2
+  echo "Usage: bash scripts/baselines/run_strong_scaling.sh <matrix-a.mtx> [matrix-b.mtx]" >&2
   exit 2
 fi
 

@@ -97,6 +97,14 @@ target_link_libraries(spgemm_validation_smoke PRIVATE spgemm_support)
 enable_project_warnings(spgemm_validation_smoke)
 
 enable_testing()
+if(UNIX)
+    find_program(BASH_EXECUTABLE bash)
+    if(BASH_EXECUTABLE)
+        add_test(NAME scaling_scripts_smoke
+                 COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/scaling_scripts_smoke.sh)
+        set_tests_properties(scaling_scripts_smoke PROPERTIES TIMEOUT 30)
+    endif()
+endif()
 add_test(
     NAME matrix_market_smoke
     COMMAND matrix_market_smoke ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/tiny_symmetric.mtx
