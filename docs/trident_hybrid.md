@@ -94,7 +94,7 @@ Build with the existing CMake commands. To check both backends locally:
 
 ```bash
 bash scripts/trident/run_local_check.sh
-bash scripts/trident/run_local_check_hybrid.sh
+VARIANT=hybrid bash scripts/trident/run_local_check.sh
 ```
 
 On an allocation of four physical nodes, two ranks per node, four compute
@@ -106,8 +106,8 @@ mpirun -np 8 --map-by ppr:2:node:PE=5 --bind-to core --nooversubscribe \
   --threads 4 --no-validate --results results/trident/hybrid_cluster_v1.tsv
 ```
 
-The strong/weak scaling and local-check scripts accept `VARIANT=hybrid`; the
-`*_hybrid.sh` wrappers select it explicitly. See the [script guide](../scripts/README.md).
+Use the shared strong/weak scaling and local-check scripts with `VARIANT=hybrid`;
+there are no hybrid-specific wrappers. See the [script guide](../scripts/README.md).
 No scheduler or resource allocation is implemented by these scripts.
 
 ## Measurements and limits
@@ -143,7 +143,8 @@ Hybrid tests also count exactly one request/response per remote consumer/input
 per product. A skewed test executes 24 changed products without intervening
 gathers/barriers, with artificial rank/stage delays, then validates every result.
 CLI tests check topology, transport/protocol labels, validation and its optional
-disablement. Shell tests cover variant selection, extra CPU binding and wrappers.
+disablement. Shell tests cover variant selection, extra CPU binding, result paths
+and failure propagation through the shared scripts.
 
 Local Linux/WSL tests are functional checks. Real-node scaling, MPI implementation
 behavior and the additional service-thread cost must be measured on the cluster.

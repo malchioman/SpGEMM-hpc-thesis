@@ -18,9 +18,6 @@ scripts/
     run_strong_scaling.sh
     run_weak_scaling.sh
     run_local_check.sh
-    run_strong_scaling_hybrid.sh
-    run_weak_scaling_hybrid.sh
-    run_local_check_hybrid.sh
 ```
 
 ## Baselines
@@ -60,19 +57,17 @@ for its ranks. The scripts do not allocate cluster resources or configure SSH.
 The MPI installation, executable, and input paths must be accessible on all
 participating nodes. Physical runs never use `--logical-node-size`.
 
-Choose `VARIANT=two_sided` (the default), `VARIANT=hybrid` or `VARIANT=get`. The three
-`*_hybrid.sh` wrappers are equivalent to the corresponding generic script with
-`VARIANT=hybrid`; they share all experiment logic and controls. Hybrid requires
-an MPI installation supporting `MPI_THREAD_MULTIPLE`.
-GET uses the existing generic scripts with `VARIANT=get`, without new wrappers;
-it requires only `MPI_THREAD_FUNNELED`, like two-sided. One invocation runs one
-selected variant, not all variants automatically.
+Choose `VARIANT=two_sided` (the default), `VARIANT=hybrid` or `VARIANT=get`.
+All variants use the same three scripts; the former hybrid-specific wrappers
+have been removed. Hybrid requires an MPI installation supporting
+`MPI_THREAD_MULTIPLE`; GET and two-sided require only `MPI_THREAD_FUNNELED`.
+One invocation runs one selected variant, not all variants automatically.
 
 ```bash
-NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling_hybrid.sh matrices/A.mtx matrices/B.mtx
-NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling_hybrid.sh
+VARIANT=hybrid NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
+VARIANT=hybrid NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_weak_scaling.sh
 ```
 
 At equal `THREADS`, hybrid requests more cores than two-sided. For equal total
@@ -127,7 +122,7 @@ These checks do not guarantee that the inputs or result fit in memory.
 
 ```bash
 bash scripts/trident/run_local_check.sh
-bash scripts/trident/run_local_check_hybrid.sh
+VARIANT=hybrid bash scripts/trident/run_local_check.sh
 VARIANT=get bash scripts/trident/run_local_check.sh
 ```
 
