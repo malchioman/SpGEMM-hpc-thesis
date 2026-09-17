@@ -80,6 +80,15 @@ add_executable(trident_hybrid src/trident/hybrid/main_hybrid.cpp)
 target_link_libraries(trident_hybrid PRIVATE trident_hybrid_support)
 enable_project_warnings(trident_hybrid)
 
+add_library(trident_get_support STATIC src/trident/get/inter_node_exchange.cpp)
+target_include_directories(trident_get_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/get)
+target_link_libraries(trident_get_support PUBLIC trident_support)
+enable_project_warnings(trident_get_support)
+
+add_executable(trident_get src/trident/get/main_get.cpp)
+target_link_libraries(trident_get PRIVATE trident_get_support)
+enable_project_warnings(trident_get)
+
 add_executable(matrix_market_smoke
     tests/matrix_market_smoke.cpp
 )
@@ -194,7 +203,7 @@ set_tests_properties(spgemm_distributed_smoke spgemm_one_sided_get_smoke
                      spgemm_one_sided_put_smoke PROPERTIES
                      FAIL_REGULAR_EXPRESSION "validation=FAIL" TIMEOUT 60)
 
-foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided trident_hybrid)
+foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided trident_hybrid trident_get)
     add_test(NAME ${target_name}_reject_malformed_numbers
         COMMAND ${CMAKE_COMMAND}
                 "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
@@ -209,6 +218,8 @@ foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_si
         set(expected_protocol trident_staged_csr_v1)
     elseif(target_name STREQUAL "trident_hybrid")
         set(expected_protocol trident_hybrid_rma_requests_v1)
+    elseif(target_name STREQUAL "trident_get")
+        set(expected_protocol trident_get_csr_v1)
     else()
         set(expected_protocol prepared_halo_v2)
     endif()

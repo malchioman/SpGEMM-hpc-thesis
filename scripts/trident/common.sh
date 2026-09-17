@@ -24,16 +24,21 @@ trident_init() {
   trident_topology="${2:-physical}"
   trident_repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
   BINARY="${BINARY:-}"
-  if [[ -z "${VARIANT:-}" && "${BINARY##*/}" == trident_hybrid ]]; then VARIANT=hybrid; fi
+  if [[ -z "${VARIANT:-}" ]]; then
+    case "${BINARY##*/}" in
+      trident_hybrid) VARIANT=hybrid ;;
+      trident_get) VARIANT=get ;;
+    esac
+  fi
   VARIANT="${VARIANT:-two_sided}"
   case "$VARIANT" in
-    two_sided) trident_service_threads=0 ;;
+    two_sided|get) trident_service_threads=0 ;;
     hybrid) trident_service_threads=1 ;;
-    *) trident_error "VARIANT must be two_sided or hybrid" ;;
+    *) trident_error "VARIANT must be two_sided, hybrid or get" ;;
   esac
   BINARY="${BINARY:-$trident_repo/build/trident_$VARIANT}"
   case "${BINARY##*/}" in
-    trident_two_sided|trident_hybrid)
+    trident_two_sided|trident_hybrid|trident_get)
       [[ "${BINARY##*/}" == "trident_$VARIANT" ]] || trident_error "BINARY and VARIANT disagree" ;;
   esac
   MPI_LAUNCHER="${MPI_LAUNCHER:-mpirun}"

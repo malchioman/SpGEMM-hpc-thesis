@@ -46,14 +46,24 @@ General Matrix-Matrix Multiplication implementations.
 - MPI 4.1 also supports `MPI_Comm_dup`, `MPI_Comm_split`, `MPI_Comm_split_type` with `MPI_COMM_TYPE_SHARED`, and `MPI_Comm_free` used by the CPU topology layer. The Trident two-sided backend implements node-local allgather semantics with explicit point-to-point messages.
 - The hybrid variant additionally follows the request/response organization of [`MessageQueue::notify/wait`](https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/include/message_queue.cuh) and the service threads in `hns_spgemm_async`. Its CPU queue uses generation-indexed slots and MPI atomic accesses, not the original GPU queue verbatim. MPI 4.1 [accumulate functions](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node320.htm) support `MPI_Accumulate(MPI_REPLACE)` for publication and `MPI_Fetch_and_op(MPI_NO_OP)` for polling; `MPI_Win_flush` completes these accesses. Concurrent service/main-thread MPI calls require `MPI_THREAD_MULTIPLE`.
 
+The GET variant is a CPU transport experiment based on MPI 4.1
+[Get](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node318.htm),
+[Flush and Sync](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node331.htm)
+and [RMA semantics](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node337.htm).
+It exposes local A/B CSR arrays directly, completes each stage's reads with
+flushes, and uses publication/completion barriers to separate products. This
+protocol is not attributed to the original GPU implementation; its partitioning
+and local aggregation retain the shared Trident provenance.
+
 The new code is a CPU reimplementation of these algorithmic components, not a
 direct copy of the GPU source. [The provenance mapping and differences](trident.md)
 document the changed range splitting, actual-node discovery, OpenMP kernel,
 staged two-sided inter-node schedule, and lack of request queues, work stealing,
 and overlap in the first two-sided version. [Trident hybrid](trident_hybrid.md)
 documents the added request service, its differences from the original, and the
-lack of next-stage pipelining. The Trident paper is not evidence for performance
-of either CPU version.
+lack of next-stage pipelining. [Trident GET](trident_get.md) documents direct
+input exposure, buffer lifetime and product-boundary synchronization. The Trident
+paper is not evidence for the performance of these CPU versions.
 
 ## Hybrid MPI/OpenMP programming
 
@@ -79,5 +89,5 @@ of either CPU version.
 
 Trident retains the input and validation policies above but uses different
 partitioning, payloads and timing protocols (`trident_staged_csr_v1` and
-`trident_hybrid_rma_requests_v1`); see
+`trident_hybrid_rma_requests_v1` and `trident_get_csr_v1`); see
 [Trident CPU](trident.md). The baseline halo assumptions do not describe Trident.

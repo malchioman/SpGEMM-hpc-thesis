@@ -142,7 +142,7 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
         const auto plan = preparePlan(a, b, grid);
         ProductWorkspace workspace(plan);
         auto exchange = backend.intraFactory(grid, plan);
-        auto inter = backend.interFactory(grid, plan);
+        auto inter = backend.interFactory(grid, plan, a, b);
         checkMpi(MPI_Barrier(grid.world), "MPI_Barrier(setup complete)", grid.world);
         const double setupEnd = MPI_Wtime();
         auto product = multiply(a, b, plan, *exchange, workspace, *inter);

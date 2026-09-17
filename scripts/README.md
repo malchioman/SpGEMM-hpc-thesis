@@ -47,7 +47,7 @@ the Trident-specific `VALIDATE` or `DRY_RUN` switches described below.
 `RANKS_PER_NODE` is fixed across the sweep, as is `THREADS` per rank. Each launch
 uses `NODES * RANKS_PER_NODE` MPI ranks. The scripts explicitly map ranks with
 `--map-by ppr:<ranks-per-node>:node:PE=<cpus-per-rank> --bind-to core --nooversubscribe`.
-Two-sided uses `cpus-per-rank=THREADS`; hybrid uses `THREADS+1` for its service
+Two-sided and GET use `cpus-per-rank=THREADS`; hybrid uses `THREADS+1` for its service
 worker. The process is bound to the resulting CPU set, without separate pinning
 of the worker. `THREADS` always means compute threads.
 This follows the mapping and binding options in the
@@ -60,10 +60,13 @@ for its ranks. The scripts do not allocate cluster resources or configure SSH.
 The MPI installation, executable, and input paths must be accessible on all
 participating nodes. Physical runs never use `--logical-node-size`.
 
-Choose `VARIANT=two_sided` (the default) or `VARIANT=hybrid`. The three
+Choose `VARIANT=two_sided` (the default), `VARIANT=hybrid` or `VARIANT=get`. The three
 `*_hybrid.sh` wrappers are equivalent to the corresponding generic script with
 `VARIANT=hybrid`; they share all experiment logic and controls. Hybrid requires
 an MPI installation supporting `MPI_THREAD_MULTIPLE`.
+GET uses the existing generic scripts with `VARIANT=get`, without new wrappers;
+it requires only `MPI_THREAD_FUNNELED`, like two-sided. One invocation runs one
+selected variant, not all variants automatically.
 
 ```bash
 NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
@@ -75,6 +78,16 @@ NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
 At equal `THREADS`, hybrid requests more cores than two-sided. For equal total
 cores per rank, use one fewer compute thread for hybrid and report that choice.
 See [hybrid measurements](../docs/trident_hybrid.md#measurements-and-limits).
+GET and two-sided use the same core count at equal `THREADS`. GET includes its
+product-boundary synchronization in timed regions; see
+[GET measurements](../docs/trident_get.md#measurements-and-limits).
+
+```bash
+VARIANT=get NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
+VARIANT=get NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_weak_scaling.sh
+```
 
 ### Strong scaling
 
@@ -115,6 +128,7 @@ These checks do not guarantee that the inputs or result fit in memory.
 ```bash
 bash scripts/trident/run_local_check.sh
 bash scripts/trident/run_local_check_hybrid.sh
+VARIANT=get bash scripts/trident/run_local_check.sh
 ```
 
 This runs small rectangular synthetic products on localhost, by default with
@@ -130,7 +144,7 @@ Set environment variables before the script invocation:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `VARIANT` | `two_sided` | Backend: `two_sided` or `hybrid` |
+| `VARIANT` | `two_sided` | Backend: `two_sided`, `hybrid` or `get` |
 | `BINARY` | `<repo>/build/trident_<VARIANT>` | Override executable path; must match the selected backend |
 | `MPI_LAUNCHER` | `mpirun` | Open MPI launcher executable, not a command containing extra flags |
 | `NODES` | `1 4` | Space-separated square node counts; logical nodes only in the local check |
@@ -150,7 +164,8 @@ the current directory. User-supplied relative paths are relative to the calling
 directory. All arguments are passed as Bash arrays, including paths with spaces.
 The printed command is shell-escaped. A failed launch stops the sweep and
 propagates its exit status; earlier successful TSV rows remain available.
-If `VARIANT` is omitted and `BINARY` ends in `trident_hybrid`, hybrid is inferred.
+If `VARIANT` is omitted and the basename of `BINARY` is `trident_hybrid` or
+`trident_get`, the corresponding variant is inferred.
 An explicit variant conflicting with a known executable name is rejected. For
 renamed/custom executables, specify `VARIANT` so CPU binding remains correct.
 
@@ -177,6 +192,8 @@ schema/protocol. Keep future variants with different protocols in separate files
 Hybrid defaults therefore write under `results/trident/trident_hybrid/`, with
 local checks under `results/tmp/trident_hybrid_local_check_v1.tsv`. Two-sided
 result paths and protocol are unchanged.
+GET defaults write under `results/trident/trident_get/`, with local checks under
+`results/tmp/trident_get_local_check_v1.tsv` and protocol `trident_get_csr_v1`.
 
 Validation is enabled unless explicitly disabled for physical experiments.
 `VALIDATE=0` skips the serial reference and comparison, but the current executable

@@ -11,12 +11,13 @@ std::unique_ptr<trident::IntraNodeExchange> makeIntra(const trident::ProcessGrid
 
 std::unique_ptr<trident::InterNodeExchange> makeInter(const trident::ProcessGrid& grid,
                                                    const trident::ExecutionPlan&,
-                                                   const CsrMatrix&, const CsrMatrix&) {
-    return std::make_unique<trident::TwoSidedInterNodeExchange>(grid);
+                                                   const CsrMatrix& a, const CsrMatrix& b) {
+    return std::make_unique<trident::GetInterNodeExchange>(grid, a, b);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    return trident::runBenchmark(argc, argv, {"trident_two_sided", makeIntra, makeInter});
+    return trident::runBenchmark(argc, argv, {"trident_get", makeIntra, makeInter,
+        MPI_THREAD_FUNNELED, "trident_get_csr_v1", "one_sided_get"});
 }

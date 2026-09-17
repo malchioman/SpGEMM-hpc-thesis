@@ -9,6 +9,9 @@ variant, not a reproduction of every optimization in the GPU implementation.
 The second CPU executable, `trident_hybrid`, reuses these components and changes
 the inter-node request/response protocol. See [Trident hybrid](trident_hybrid.md)
 for its RMA queues, service thread, resource requirements, and timing differences.
+The third executable, `trident_get`, replaces inter-node payload exchange with
+direct RMA reads while retaining two-sided intra-node aggregation. See
+[Trident GET](trident_get.md) for its product-boundary synchronization and timing.
 
 ## Source provenance and reuse
 
@@ -38,7 +41,7 @@ src/trident/
     process_grid.*   physical topology and logical test topology
     matrix_blocks.*  hierarchical distribution, gather, CPU accumulation
     execution.*      static-Cannon plan, backend interfaces, product driver
-    csr_transfer.*   two-sided CSR payload helpers used by both variants
+    csr_transfer.*   CSR resizing and two-sided payload helpers
     intra_node_two_sided.*  shared node-local B aggregation
     benchmark.*      input/options, timing, validation, TSV output
   two_sided/
@@ -47,15 +50,18 @@ src/trident/
   hybrid/
     inter_node_exchange.*
     main_hybrid.cpp
+  get/
+    inter_node_exchange.*
+    main_get.cpp
 ```
 
 `trident_support` depends only on the project's `spgemm_support` and includes the
-shared two-sided intra-node backend. `trident_two_sided_support` and
-`trident_hybrid_support` each add their own inter-node backend; hybrid also links
-the thread runtime. Neither depends on the other's library or on
+shared two-sided intra-node backend. `trident_two_sided_support`,
+`trident_hybrid_support` and `trident_get_support` each add their own inter-node
+backend; hybrid also links the thread runtime. None depends on another variant's library or on
 `spgemm_baseline_support` and its halo data structures.
 `IntraNodeExchange::assemble` is the substitution point for future intra-node
-GET or PUT aggregation protocols. Both current versions explicitly supply an
+GET or PUT aggregation protocols. All current versions explicitly supply an
 `InterNodeExchange` (`begin/fetch/finish/close`) and reuse the same two-sided
 intra-node backend. The product driver has no implicit two-sided fallback.
 Grids, matrix ownership, input rules, local
