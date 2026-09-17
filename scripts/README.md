@@ -18,6 +18,9 @@ scripts/
     run_strong_scaling.sh
     run_weak_scaling.sh
     run_local_check.sh
+    run_strong_scaling_hybrid.sh
+    run_weak_scaling_hybrid.sh
+    run_local_check_hybrid.sh
 ```
 
 ## Baselines
@@ -43,16 +46,35 @@ the Trident-specific `VALIDATE` or `DRY_RUN` switches described below.
 `NODES` contains physical node counts, each a perfect square: `1 4 9 16 ...`.
 `RANKS_PER_NODE` is fixed across the sweep, as is `THREADS` per rank. Each launch
 uses `NODES * RANKS_PER_NODE` MPI ranks. The scripts explicitly map ranks with
-`--map-by ppr:<ranks-per-node>:node:PE=<threads> --bind-to core --nooversubscribe`.
+`--map-by ppr:<ranks-per-node>:node:PE=<cpus-per-rank> --bind-to core --nooversubscribe`.
+Two-sided uses `cpus-per-rank=THREADS`; hybrid uses `THREADS+1` for its service
+worker. The process is bound to the resulting CPU set, without separate pinning
+of the worker. `THREADS` always means compute threads.
 This follows the mapping and binding options in the
 [Open MPI mpirun manual](https://docs.open-mpi.org/en/v5.0.x/man-openmpi/man1/mpirun.1.html).
 
 Start inside a cluster allocation large enough for the largest requested node
 count, or supply `HOSTFILE` with available hosts and their slots. Each node needs
-at least `RANKS_PER_NODE * THREADS` allocated CPU cores, with enough MPI slots
+at least `RANKS_PER_NODE * cpus-per-rank` allocated CPU cores, with enough MPI slots
 for its ranks. The scripts do not allocate cluster resources or configure SSH.
 The MPI installation, executable, and input paths must be accessible on all
 participating nodes. Physical runs never use `--logical-node-size`.
+
+Choose `VARIANT=two_sided` (the default) or `VARIANT=hybrid`. The three
+`*_hybrid.sh` wrappers are equivalent to the corresponding generic script with
+`VARIANT=hybrid`; they share all experiment logic and controls. Hybrid requires
+an MPI installation supporting `MPI_THREAD_MULTIPLE`.
+
+```bash
+NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_strong_scaling_hybrid.sh matrices/A.mtx matrices/B.mtx
+NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_weak_scaling_hybrid.sh
+```
+
+At equal `THREADS`, hybrid requests more cores than two-sided. For equal total
+cores per rank, use one fewer compute thread for hybrid and report that choice.
+See [hybrid measurements](../docs/trident_hybrid.md#measurements-and-limits).
 
 ### Strong scaling
 
@@ -92,6 +114,7 @@ These checks do not guarantee that the inputs or result fit in memory.
 
 ```bash
 bash scripts/trident/run_local_check.sh
+bash scripts/trident/run_local_check_hybrid.sh
 ```
 
 This runs small rectangular synthetic products on localhost, by default with
@@ -107,7 +130,8 @@ Set environment variables before the script invocation:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `BINARY` | `<repo>/build/trident_two_sided` | Executable path; future variants must support the same CLI |
+| `VARIANT` | `two_sided` | Backend: `two_sided` or `hybrid` |
+| `BINARY` | `<repo>/build/trident_<VARIANT>` | Override executable path; must match the selected backend |
 | `MPI_LAUNCHER` | `mpirun` | Open MPI launcher executable, not a command containing extra flags |
 | `NODES` | `1 4` | Space-separated square node counts; logical nodes only in the local check |
 | `RANKS_PER_NODE` | `2` | MPI ranks per physical or logical node |
@@ -126,6 +150,9 @@ the current directory. User-supplied relative paths are relative to the calling
 directory. All arguments are passed as Bash arrays, including paths with spaces.
 The printed command is shell-escaped. A failed launch stops the sweep and
 propagates its exit status; earlier successful TSV rows remain available.
+If `VARIANT` is omitted and `BINARY` ends in `trident_hybrid`, hybrid is inferred.
+An explicit variant conflicting with a known executable name is rejected. For
+renamed/custom executables, specify `VARIANT` so CPU binding remains correct.
 
 Preview the physical mapping without a built executable or an allocation:
 
@@ -147,6 +174,9 @@ The experiment labels are `trident_strong_scaling`, `trident_weak_scaling`, and
 `trident_local_check`. The executable also records detected topology and its
 benchmark protocol. Do not combine Trident TSV rows with the baselines' different
 schema/protocol. Keep future variants with different protocols in separate files.
+Hybrid defaults therefore write under `results/trident/trident_hybrid/`, with
+local checks under `results/tmp/trident_hybrid_local_check_v1.tsv`. Two-sided
+result paths and protocol are unchanged.
 
 Validation is enabled unless explicitly disabled for physical experiments.
 `VALIDATE=0` skips the serial reference and comparison, but the current executable

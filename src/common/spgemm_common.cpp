@@ -68,9 +68,11 @@ void printUsage(const std::string& programName, const std::string& defaultResult
 
 int parsePositiveInt(const char* value, const char* option) {
     try {
-        const int parsed = std::stoi(value);
-        if (parsed <= 0) {
-            throw std::invalid_argument("not positive");
+        const std::string input(value);
+        std::size_t used = 0;
+        const int parsed = std::stoi(input, &used);
+        if (used != input.size() || parsed <= 0) {
+            throw std::invalid_argument("not a positive integer");
         }
         return parsed;
     } catch (const std::exception&) {
@@ -80,9 +82,11 @@ int parsePositiveInt(const char* value, const char* option) {
 
 int parseNonNegativeInt(const char* value, const char* option) {
     try {
-        const int parsed = std::stoi(value);
-        if (parsed < 0) {
-            throw std::invalid_argument("negative");
+        const std::string input(value);
+        std::size_t used = 0;
+        const int parsed = std::stoi(input, &used);
+        if (used != input.size() || parsed < 0) {
+            throw std::invalid_argument("not a non-negative integer");
         }
         return parsed;
     } catch (const std::exception&) {

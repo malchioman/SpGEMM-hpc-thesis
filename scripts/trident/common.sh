@@ -23,7 +23,19 @@ trident_init() {
   local mode="$1" name nodes side ranks
   trident_topology="${2:-physical}"
   trident_repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-  BINARY="${BINARY:-$trident_repo/build/trident_two_sided}"
+  BINARY="${BINARY:-}"
+  if [[ -z "${VARIANT:-}" && "${BINARY##*/}" == trident_hybrid ]]; then VARIANT=hybrid; fi
+  VARIANT="${VARIANT:-two_sided}"
+  case "$VARIANT" in
+    two_sided) trident_service_threads=0 ;;
+    hybrid) trident_service_threads=1 ;;
+    *) trident_error "VARIANT must be two_sided or hybrid" ;;
+  esac
+  BINARY="${BINARY:-$trident_repo/build/trident_$VARIANT}"
+  case "${BINARY##*/}" in
+    trident_two_sided|trident_hybrid)
+      [[ "${BINARY##*/}" == "trident_$VARIANT" ]] || trident_error "BINARY and VARIANT disagree" ;;
+  esac
   MPI_LAUNCHER="${MPI_LAUNCHER:-mpirun}"
   NODES="${NODES:-1 4}"
   RANKS_PER_NODE="${RANKS_PER_NODE:-2}"
@@ -47,6 +59,8 @@ trident_init() {
     trident_integer "$name" "${!name}"
   done
   trident_integer WARMUP "$WARMUP" 0
+  trident_cpus_per_rank=$((THREADS + trident_service_threads))
+  trident_integer CPUS_PER_RANK "$trident_cpus_per_rank"
   [[ "$VALIDATE" == 0 || "$VALIDATE" == 1 ]] || trident_error "VALIDATE must be 0 or 1"
   [[ "$DRY_RUN" == 0 || "$DRY_RUN" == 1 ]] || trident_error "DRY_RUN must be 0 or 1"
   case "$SCHEDULE" in
@@ -83,15 +97,15 @@ trident_launch() {
   if [[ "$trident_topology" == logical_test ]]; then
     command+=(--host localhost --oversubscribe --bind-to none)
   else
-    command+=(--map-by "ppr:$RANKS_PER_NODE:node:PE=$THREADS" --bind-to core --nooversubscribe)
+    command+=(--map-by "ppr:$RANKS_PER_NODE:node:PE=$trident_cpus_per_rank" --bind-to core --nooversubscribe)
     if [[ -n "$HOSTFILE" ]]; then command+=(--hostfile "$HOSTFILE"); fi
   fi
   command+=("$BINARY" "$@" "${trident_benchmark_args[@]}" --experiment "$experiment")
   if [[ "$trident_topology" == logical_test ]]; then
     command+=(--logical-node-size "$RANKS_PER_NODE")
   fi
-  printf '# topology=%s nodes=%s ranks_per_node=%s ranks=%s threads=%s\n' \
-    "$trident_topology" "$nodes" "$RANKS_PER_NODE" "$ranks" "$THREADS"
+  printf '# topology=%s nodes=%s ranks_per_node=%s ranks=%s threads=%s variant=%s service_threads=%s\n' \
+    "$trident_topology" "$nodes" "$RANKS_PER_NODE" "$ranks" "$THREADS" "$VARIANT" "$trident_service_threads"
   printf '%q ' "${command[@]}"
   printf '\n'
   if [[ "$DRY_RUN" == 0 ]]; then "${command[@]}"; fi

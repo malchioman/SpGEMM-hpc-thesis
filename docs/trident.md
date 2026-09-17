@@ -6,6 +6,10 @@ Bellavita et al., *Communication-Avoiding SpGEMM via Trident Partitioning on
 Hierarchical GPU Interconnects*, ICS 2026. This is the CPU staged reference
 variant, not a reproduction of every optimization in the GPU implementation.
 
+The second CPU executable, `trident_hybrid`, reuses these components and changes
+the inter-node request/response protocol. See [Trident hybrid](trident_hybrid.md)
+for its RMA queues, service thread, resource requirements, and timing differences.
+
 ## Source provenance and reuse
 
 The upstream repository was inspected at commit
@@ -16,7 +20,7 @@ The local adaptation follows these specific components:
 | --- | --- | --- |
 | [`distributed_mmio` partitioning](https://github.com/HicrestLaboratory/distributed_mmio/blob/2e7c9b3c3205f4f019269b155f9381c8c4974b43/src/dmmio/partitioning.cpp), `edgeowner::groupowner`, `internodeidowner`, `edge2owner` | `common/process_grid.*`, `common/matrix_blocks.*` | Coarse 2D ownership and intra-node row slices. CPU code uses actual shared-memory groups, a coordinate-to-rank map, and balanced ranges instead of assuming consecutive world ranks or padding to equal tile sizes. |
 | [`LocalSpGEMMTask` and `TaskQueue`](https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/include/task_queue.cuh) | `common/execution.*` | Coordinates `(i,j,k)`, stagger `h=(i+j+round)%q`, fixed input owners, and accumulation into a fixed C slice. A deterministic stage plan replaces request/task queues. |
-| [`TileHolder::node_allgather`](https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/include/tile_holder.cuh) | `two_sided/intra_node_exchange.*` | Assemble all B row slices in node-rank order and reconstruct a complete CSR tile. Explicit `MPI_Irecv`/`MPI_Isend` replaces CUDA/NCCL or MPI collectives. |
+| [`TileHolder::node_allgather`](https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/include/tile_holder.cuh) | `common/intra_node_two_sided.*` | Assemble all B row slices in node-rank order and reconstruct a complete CSR tile. Explicit `MPI_Irecv`/`MPI_Isend` replaces CUDA/NCCL or MPI collectives. |
 | [`hns_spgemm_async`](https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/src/hns_spgemm.cu) | `common/execution.*`, `common/matrix_blocks.*` | Receive A/B, reconstruct B, multiply, accumulate. CPU/OpenMP replaces GPU kernels; no communication threads, request queues, work stealing, or overlap in this variant. |
 
 This is algorithmic reuse with a CPU reimplementation, not a vendored copy or a
@@ -33,18 +37,28 @@ src/trident/
   common/
     process_grid.*   physical topology and logical test topology
     matrix_blocks.*  hierarchical distribution, gather, CPU accumulation
-    execution.*      static-Cannon plan, inter-node exchange, product driver
+    execution.*      static-Cannon plan, backend interfaces, product driver
+    csr_transfer.*   two-sided CSR payload helpers used by both variants
+    intra_node_two_sided.*  shared node-local B aggregation
     benchmark.*      input/options, timing, validation, TSV output
   two_sided/
-    intra_node_exchange.*
+    inter_node_exchange.*
     main_two_sided.cpp
+  hybrid/
+    inter_node_exchange.*
+    main_hybrid.cpp
 ```
 
-`trident_support` depends only on the project's `spgemm_support`;
-`trident_two_sided_support` adds the first intra-node backend. It does not depend
-on `spgemm_baseline_support` or its halo data structures.
+`trident_support` depends only on the project's `spgemm_support` and includes the
+shared two-sided intra-node backend. `trident_two_sided_support` and
+`trident_hybrid_support` each add their own inter-node backend; hybrid also links
+the thread runtime. Neither depends on the other's library or on
+`spgemm_baseline_support` and its halo data structures.
 `IntraNodeExchange::assemble` is the substitution point for future intra-node
-GET, PUT, or hybrid protocols. Grids, matrix ownership, input rules, local
+GET or PUT aggregation protocols. Both current versions explicitly supply an
+`InterNodeExchange` (`begin/fetch/finish/close`) and reuse the same two-sided
+intra-node backend. The product driver has no implicit two-sided fallback.
+Grids, matrix ownership, input rules, local
 accumulator, and benchmark driver remain shared. A pipeline would additionally
 need an explicit start/completion interface and multiple buffers; merely
 replacing an MPI call does not implement overlap.
@@ -69,8 +83,10 @@ multiplication. The square constraint applies to the node grid, not the inputs.
    C never moves during the product. Final CSR columns are sorted and exact
    zero sums are omitted, including cancellations between different stages.
 
-The inter-node transport is **also two-sided**, and is part of the common
-implementation in this first variant. All current-stage requests complete before
+The inter-node transport is **also two-sided**, implemented by
+`TwoSidedInterNodeExchange` in `two_sided/inter_node_exchange.*`.
+Its lifecycle hooks do not start workers or allocate communication resources;
+all current-stage requests complete within `fetch`, before
 the local product starts. There is no global barrier inside the product, but the
 matching sends/receives couple stage progress across nodes. This does **not**
 reproduce the original independently progressing request/response service or
@@ -141,6 +157,8 @@ while a plan is reused. The driver always reuses identical inputs.
   a single sample, excluding distribution.
 - `inter_node_p90_seconds`, `intra_node_p90_seconds`: respective exchange phases,
   including waits, buffer operations and local copies (also for local sources).
+  Inter-node timing includes backend `begin`/`finish` calls, which are no-ops in
+  the two-sided version.
 - `communication_p90_seconds`: P90 of each sample's maximum rank time for the
   sum of the two exchange phases. It is not the sum of the two separate P90s.
 - `compute_p90_seconds`: CPU accumulator creation, all partial products,

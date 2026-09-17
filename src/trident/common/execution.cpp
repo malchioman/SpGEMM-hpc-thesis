@@ -8,64 +8,6 @@ namespace {
 
 int wrap(int value, int size) { return (value % size + size) % size; }
 
-void resizeTile(CsrMatrix& tile, TileShape shape) {
-    tile.rows = shape.rows;
-    tile.cols = shape.cols;
-    tile.rowPtr.resize(static_cast<std::size_t>(shape.rows) + 1);
-    tile.columnIndices.resize(shape.nnz);
-    tile.values.resize(shape.nnz);
-}
-
-void receiveTile(CsrMatrix& tile, int source, int tag, MPI_Comm comm,
-                 std::vector<MPI_Request>& requests) {
-    const auto offset = requests.size();
-    requests.resize(offset + 3, MPI_REQUEST_NULL);
-    checkMpi(MPI_Irecv(tile.rowPtr.data(), mpiCount(tile.rowPtr.size()), MPI_INT, source, tag,
-                        comm, &requests[offset]), "MPI_Irecv(inter pointers)", comm);
-    checkMpi(MPI_Irecv(tile.columnIndices.data(), mpiCount(tile.values.size()), MPI_INT, source,
-                        tag + 1, comm, &requests[offset + 1]), "MPI_Irecv(inter indices)", comm);
-    checkMpi(MPI_Irecv(tile.values.data(), mpiCount(tile.values.size()), MPI_DOUBLE, source,
-                        tag + 2, comm, &requests[offset + 2]), "MPI_Irecv(inter values)", comm);
-}
-
-void sendTile(const CsrMatrix& tile, int target, int tag, MPI_Comm comm,
-              std::vector<MPI_Request>& requests) {
-    const auto offset = requests.size();
-    requests.resize(offset + 3, MPI_REQUEST_NULL);
-    checkMpi(MPI_Isend(tile.rowPtr.data(), mpiCount(tile.rowPtr.size()), MPI_INT, target, tag,
-                        comm, &requests[offset]), "MPI_Isend(inter pointers)", comm);
-    checkMpi(MPI_Isend(tile.columnIndices.data(), mpiCount(tile.values.size()), MPI_INT, target,
-                        tag + 1, comm, &requests[offset + 1]), "MPI_Isend(inter indices)", comm);
-    checkMpi(MPI_Isend(tile.values.data(), mpiCount(tile.values.size()), MPI_DOUBLE, target,
-                        tag + 2, comm, &requests[offset + 2]), "MPI_Isend(inter values)", comm);
-}
-
-void exchangeInterNode(const CsrMatrix& a, const CsrMatrix& b, const ProcessGrid& grid,
-                       const Stage& stage, ProductWorkspace& workspace) {
-    resizeTile(workspace.a, stage.a);
-    resizeTile(workspace.b, stage.b);
-    std::vector<MPI_Request> requests;
-    requests.reserve(12);
-    if (stage.aSource == grid.rank) {
-        workspace.a = a;
-    } else {
-        receiveTile(workspace.a, stage.aSource, 20, grid.world, requests);
-    }
-    if (stage.bSource == grid.rank) {
-        workspace.b = b;
-    } else {
-        receiveTile(workspace.b, stage.bSource, 30, grid.world, requests);
-    }
-    // Invert h=(i+j+round)%q: each static owner has exactly one consumer per round.
-    if (stage.aTarget != grid.rank) {
-        sendTile(a, stage.aTarget, 20, grid.world, requests);
-    }
-    if (stage.bTarget != grid.rank) {
-        sendTile(b, stage.bTarget, 30, grid.world, requests);
-    }
-    waitAll(requests, grid.world);
-}
-
 }  // namespace
 
 ExecutionPlan preparePlan(const CsrMatrix& a, const CsrMatrix& b, const ProcessGrid& grid) {
@@ -122,18 +64,21 @@ ProductWorkspace::ProductWorkspace(const ExecutionPlan& plan) {
     }
 }
 
-ProductResult multiply(const CsrMatrix& a, const CsrMatrix& b, const ProcessGrid& grid,
-                       const ExecutionPlan& plan, IntraNodeExchange& exchange,
-                       ProductWorkspace& workspace) {
+ProductResult multiply(const CsrMatrix& a, const CsrMatrix& b, const ExecutionPlan& plan,
+                       IntraNodeExchange& exchange, ProductWorkspace& workspace,
+                       InterNodeExchange& inter) {
     ProductResult result;
     const double start = MPI_Wtime();
+    inter.begin(a, b);
+    result.interNodeSeconds += MPI_Wtime() - start;
+    const double computeInit = MPI_Wtime();
     double finishStart = 0.0;
     {
         LocalAccumulator accumulator(plan.resultRows, plan.resultCols);
-        result.computeSeconds = MPI_Wtime() - start;
+        result.computeSeconds = MPI_Wtime() - computeInit;
         for (const auto& stage : plan.stages) {
             const double interStart = MPI_Wtime();
-            exchangeInterNode(a, b, grid, stage, workspace);
+            inter.fetch(a, b, stage, workspace);
             const double intraStart = MPI_Wtime();
             exchange.assemble(workspace.b, stage, workspace.panel);
             const double computeStart = MPI_Wtime();
@@ -148,6 +93,9 @@ ProductResult multiply(const CsrMatrix& a, const CsrMatrix& b, const ProcessGrid
     }
     // Include destruction of the per-row hash tables in the compute measurement.
     result.computeSeconds += MPI_Wtime() - finishStart;
+    const double finish = MPI_Wtime();
+    inter.finish();
+    result.interNodeSeconds += MPI_Wtime() - finish;
     result.totalSeconds = MPI_Wtime() - start;
     return result;
 }

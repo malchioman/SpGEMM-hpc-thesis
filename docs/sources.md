@@ -44,12 +44,16 @@ General Matrix-Matrix Multiplication implementations.
 - J. Bellavita, L. Pichetti, T. Pasquali, F. Vella, and G. Guidi, *Communication-Avoiding SpGEMM via Trident Partitioning on Hierarchical GPU Interconnects*, ICS 2026. The supplied paper's Sections 3.2-3.3 and Algorithms 1-2 support the coarse 2D partition, intra-node 1D row slices, staggered static-owner schedule, local B aggregation and C-stationary updates.
 - [Official Trident implementation at c37debac](https://github.com/HicrestLaboratory/Trident/tree/c37debaccc58b72859f1837f260900a40094848c), inspected 2026-09-16. `LocalSpGEMMTask`, `TaskQueue`, `TileHolder::node_allgather` and `hns_spgemm_async` provide the corresponding implementation reference. [The pinned distributed_mmio submodule](https://github.com/HicrestLaboratory/distributed_mmio/tree/2e7c9b3c3205f4f019269b155f9381c8c4974b43) provides the hierarchical ownership/indexing reference.
 - MPI 4.1 also supports `MPI_Comm_dup`, `MPI_Comm_split`, `MPI_Comm_split_type` with `MPI_COMM_TYPE_SHARED`, and `MPI_Comm_free` used by the CPU topology layer. The Trident two-sided backend implements node-local allgather semantics with explicit point-to-point messages.
+- The hybrid variant additionally follows the request/response organization of [`MessageQueue::notify/wait`](https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/include/message_queue.cuh) and the service threads in `hns_spgemm_async`. Its CPU queue uses generation-indexed slots and MPI atomic accesses, not the original GPU queue verbatim. MPI 4.1 [accumulate functions](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node320.htm) support `MPI_Accumulate(MPI_REPLACE)` for publication and `MPI_Fetch_and_op(MPI_NO_OP)` for polling; `MPI_Win_flush` completes these accesses. Concurrent service/main-thread MPI calls require `MPI_THREAD_MULTIPLE`.
 
 The new code is a CPU reimplementation of these algorithmic components, not a
 direct copy of the GPU source. [The provenance mapping and differences](trident.md)
 document the changed range splitting, actual-node discovery, OpenMP kernel,
 staged two-sided inter-node schedule, and lack of request queues, work stealing,
-and overlap. The Trident paper is not evidence for performance of this CPU code.
+and overlap in the first two-sided version. [Trident hybrid](trident_hybrid.md)
+documents the added request service, its differences from the original, and the
+lack of next-stage pipelining. The Trident paper is not evidence for performance
+of either CPU version.
 
 ## Hybrid MPI/OpenMP programming
 
@@ -74,5 +78,6 @@ and overlap. The Trident paper is not evidence for performance of this CPU code.
 - Rank 0 gathers the distributed CSR result and, by default, validates it against a serial SpGEMM implementation outside the timed samples. The benchmark-specific validation policy requires a maximum absolute error strictly below `1e-10` and rejects non-finite values in either result. A failed validation is recorded as `FAIL`; its status is broadcast to all ranks, which return a nonzero exit code after normal MPI cleanup. The project-specific `--no-validate` flag skips the serial product and comparison, reports `SKIPPED` with `max_abs_error=NA`, and permits a successful exit without certifying numerical correctness. It does not disable input checks or final result gathering, nor remove global A and B from rank 0.
 
 Trident retains the input and validation policies above but uses different
-partitioning, payloads and timing protocol (`trident_staged_csr_v1`); see
+partitioning, payloads and timing protocols (`trident_staged_csr_v1` and
+`trident_hybrid_rma_requests_v1`); see
 [Trident CPU](trident.md). The baseline halo assumptions do not describe Trident.

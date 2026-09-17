@@ -1,4 +1,4 @@
-#include "intra_node_exchange.hpp"
+#include "intra_node_two_sided.hpp"
 
 #include <algorithm>
 

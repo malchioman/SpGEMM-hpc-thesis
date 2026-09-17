@@ -4,6 +4,7 @@
 
 namespace trident {
 
+// Node-local B aggregation shared by the two-sided and hybrid executables.
 class TwoSidedIntraNodeExchange final : public IntraNodeExchange {
 public:
     explicit TwoSidedIntraNodeExchange(const ProcessGrid& grid) : grid_(grid) {}
