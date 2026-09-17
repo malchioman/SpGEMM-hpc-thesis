@@ -105,6 +105,8 @@ void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& g
     std::unique_ptr<trident::InterNodeExchange> inter;
 #ifdef TRIDENT_HYBRID
     inter = std::make_unique<trident::HybridInterNodeExchange>(grid);
+#elif defined(TRIDENT_GET)
+    inter = std::make_unique<trident::GetInterNodeExchange>(grid, a, b);
 #else
     inter = std::make_unique<trident::TwoSidedInterNodeExchange>(grid);
 #endif
@@ -123,7 +125,7 @@ void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& g
         }
 #endif
         if (skew) {
-            // No gather/barrier between generations: faster ranks may request the next product.
+            // No test-side gather/barrier between generations; backend synchronization still applies.
             products.push_back(std::move(product.matrix));
             if (grid.rank == 0) inputsB.push_back(globalB);
         } else {

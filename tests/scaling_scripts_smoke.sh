@@ -231,6 +231,50 @@ expect_runs 0
 grep -q '/build/trident_hybrid' "$scratch/stdout" || fail 'incorrect default hybrid binary'
 run_case 2 trident/run_local_check_hybrid.sh VALIDATE=0
 expect_runs 0
+get_binary="$scratch/paths with spaces/trident_get"
+cp "$binary" "$get_binary"
+chmod +x "$get_binary"
+run_case 0 trident/run_weak_scaling.sh BINARY="$get_binary" THREADS=3
+expect_runs 2
+read_call 1
+expect_option --map-by ppr:2:node:PE=3
+expect_option --results "$repo/results/trident/trident_get/weak_scaling_v1.tsv"
+for mode in strong_scaling weak_scaling local_check; do
+  inputs=()
+  if [[ "$mode" == strong_scaling ]]; then inputs=("$matrix_a" "$matrix_b"); fi
+  run_case 0 "trident/run_${mode}.sh" VARIANT=get BINARY="$get_binary" THREADS=3
+  expect_runs 2
+  read_call 1
+  expect_arg "$get_binary"
+  expect_option -np 8
+  expect_option --threads 3
+  if [[ "$mode" == local_check ]]; then
+    expect_option --logical-node-size 2
+    expect_option --bind-to none
+    reject_arg --no-validate
+    expect_option --results "$repo/results/tmp/trident_get_local_check_v1.tsv"
+  else
+    expect_option --map-by ppr:2:node:PE=3
+    expect_option --results "$repo/results/trident/trident_get/${mode}_v1.tsv"
+  fi
+done
+inputs=()
+run_case 0 trident/run_weak_scaling.sh VARIANT=get BINARY= DRY_RUN=1
+expect_runs 0
+grep -q '/build/trident_get' "$scratch/stdout" || fail 'incorrect default GET binary'
+for settings in two_sided hybrid; do
+  run_case 2 trident/run_weak_scaling.sh VARIANT="$settings" BINARY="$get_binary"
+  expect_runs 0
+done
+run_case 2 trident/run_weak_scaling.sh VARIANT=get BINARY="$hybrid_binary"
+expect_runs 0
+run_case 2 trident/run_local_check.sh VARIANT=get BINARY="$get_binary" VALIDATE=0
+expect_runs 0
+run_case 0 trident/run_weak_scaling.sh VARIANT=get BINARY="$get_binary" VALIDATE=0
+read_call 0
+expect_arg --no-validate
+run_case 17 trident/run_weak_scaling.sh VARIANT=get BINARY="$get_binary" MOCK_MPI_EXIT=17
+expect_runs 1
 run_case 17 trident/run_weak_scaling.sh MOCK_MPI_EXIT=17
 expect_runs 1
 run_case 0 trident/run_weak_scaling.sh DRY_RUN=1 BINARY="$scratch/missing-binary" \
