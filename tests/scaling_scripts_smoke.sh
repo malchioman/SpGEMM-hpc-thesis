@@ -209,7 +209,7 @@ expect_option --results "$repo/results/trident/trident_hybrid/weak_scaling_v1.ts
 for mode in strong_scaling weak_scaling local_check; do
   inputs=()
   if [[ "$mode" == strong_scaling ]]; then inputs=("$matrix_a" "$matrix_b"); fi
-  run_case 0 "trident/run_${mode}_hybrid.sh" BINARY="$hybrid_binary" THREADS=3
+  run_case 0 "trident/run_${mode}.sh" VARIANT=hybrid BINARY="$hybrid_binary" THREADS=3
   expect_runs 2
   read_call 1
   expect_arg "$hybrid_binary"
@@ -229,8 +229,13 @@ inputs=()
 run_case 0 trident/run_weak_scaling.sh VARIANT=hybrid BINARY= DRY_RUN=1
 expect_runs 0
 grep -q '/build/trident_hybrid' "$scratch/stdout" || fail 'incorrect default hybrid binary'
-run_case 2 trident/run_local_check_hybrid.sh VALIDATE=0
+run_case 2 trident/run_local_check.sh VARIANT=hybrid BINARY="$hybrid_binary" VALIDATE=0
 expect_runs 0
+run_case 0 trident/run_weak_scaling.sh VARIANT=hybrid BINARY="$hybrid_binary" VALIDATE=0
+read_call 0
+expect_arg --no-validate
+run_case 17 trident/run_weak_scaling.sh VARIANT=hybrid BINARY="$hybrid_binary" MOCK_MPI_EXIT=17
+expect_runs 1
 get_binary="$scratch/paths with spaces/trident_get"
 cp "$binary" "$get_binary"
 chmod +x "$get_binary"

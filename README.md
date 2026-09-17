@@ -244,19 +244,19 @@ NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
 NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
   bash scripts/trident/run_weak_scaling.sh
 bash scripts/trident/run_local_check.sh
-bash scripts/trident/run_local_check_hybrid.sh
+VARIANT=hybrid bash scripts/trident/run_local_check.sh
 VARIANT=get bash scripts/trident/run_local_check.sh
-NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling_hybrid.sh matrices/A.mtx matrices/B.mtx
-NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling_hybrid.sh
+VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
+VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_weak_scaling.sh
 ```
 
 Physical experiments require a suitable allocation or `HOSTFILE`; the local
 check uses logical nodes on localhost and is not a scaling measurement.
 Set `DRY_RUN=1` to preview commands. Validation is enabled by default.
 Generic Trident scripts accept `VARIANT=two_sided`, `VARIANT=hybrid` or `VARIANT=get`.
-GET uses the existing scripts directly, without additional wrapper files.
+All three variants use the same scripts directly, without variant-specific wrappers.
 Physical hybrid launches reserve one additional CPU core per rank for service;
 `THREADS` still specifies compute threads. GET and two-sided use `THREADS` cores
 per rank. Scripts do not allocate resources.
