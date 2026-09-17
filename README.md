@@ -5,7 +5,7 @@ Multiplication (SpGEMM), computing `C = A * B` with `A`, `B`, and `C` stored as
 sparse CSR matrices.
 
 The repository contains three row-distributed `MPI + OpenMP` SpGEMM baselines
-and a first hierarchical CPU Trident variant, `trident_two_sided`.
+and two hierarchical CPU Trident variants, `trident_two_sided` and `trident_hybrid`.
 The baselines use the following communication variants:
 
 - `A` is distributed by contiguous row blocks; each rank computes the matching
@@ -41,6 +41,7 @@ src/
   trident/
     common/
     two_sided/
+    hybrid/
 ```
 
 `common` contains CSR storage, Matrix Market input, shared MPI/benchmark helpers,
@@ -48,8 +49,11 @@ and serial validation. It also retains the existing row-distribution utilities.
 `baselines` contains the three row-distributed SpGEMM programs, their remote-row
 exchange code, and the distributed local kernel. `trident/common` contains the
 hierarchical process grid, partitioning, static-Cannon stage plan, CPU kernel,
-and benchmark driver shared by Trident variants. `trident/two_sided` contains the
-first intra-node communication backend and its executable entry point.
+and benchmark driver shared by Trident variants. The shared two-sided intra-node
+backend lives in `trident/common/intra_node_two_sided.*`. `trident/two_sided` and
+`trident/hybrid` each contain their own inter-node backend and executable entry
+point. Both mains explicitly select an intra-node and an inter-node backend;
+neither variant depends on the other's library.
 
 The CMake targets `matrix_market` and `spgemm_support` provide common utilities.
 `spgemm_baseline_support` depends on those utilities and adds the baseline-specific
@@ -62,6 +66,12 @@ within nodes. This initial version is staged, without the GPU original's request
 queues or communication/computation overlap. See [Trident CPU](docs/trident.md)
 for source provenance, exact scope, cluster/local commands, timing definitions,
 and the shared structure intended for subsequent variants.
+
+`trident_hybrid` reuses that partitioning, kernel and intra-node backend, adding
+RMA request slots and a service thread for two-sided inter-node responses.
+It requires `MPI_THREAD_MULTIPLE`; the two-sided version remains FUNNELED.
+See [Trident hybrid](docs/trident_hybrid.md) for protocol details and the extra
+CPU-core budget. Neither backend implements next-stage prefetch/pipelining.
 
 ## Build
 
@@ -103,6 +113,9 @@ those non-complex inputs. The three symmetry modes require square matrices;
 `general` inputs may be square or rectangular. Synthetic inputs use `--rows` for rows of `A`, `--cols`
 for columns of `A` and rows of `B`, `--b-cols` for columns of `B`, and separate
 nonzero controls for the two inputs.
+Numeric options must be fully parsed decimal integers within the signed-int
+range. Values such as `1e3`, `2junk`, and `2.5` are rejected, not truncated.
+`--warmup` permits zero; the other shared numeric options must be positive.
 
 All three baseline executables use the `prepared_halo_v2` benchmark protocol. With fixed
 input sparsity, they prepare requests, row lengths, offsets, and communication
@@ -145,6 +158,9 @@ The tests cover numerical validation, the three baseline transports, rectangular
 and empty matrices, uneven partitions, ranks without rows, and multiple OpenMP
 threads. Trident adds hierarchical topology tests and independent dense-product
 checks, including cancellation and repeated products with changed input payloads.
+Parser tests cover every shared numeric option, malformed suffixes, integer
+bounds and zero warmup. MPI CLI regressions verify that all five executables
+reject malformed numeric arguments without writing benchmark results.
 
 Validation is enabled by default, runs outside the timed samples, and requires
 a maximum absolute error strictly below `1e-10`. Non-finite values in either result, including matching
@@ -220,11 +236,19 @@ NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
 NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
   bash scripts/trident/run_weak_scaling.sh
 bash scripts/trident/run_local_check.sh
+bash scripts/trident/run_local_check_hybrid.sh
+NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_strong_scaling_hybrid.sh matrices/A.mtx matrices/B.mtx
+NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
+  bash scripts/trident/run_weak_scaling_hybrid.sh
 ```
 
 Physical experiments require a suitable allocation or `HOSTFILE`; the local
 check uses logical nodes on localhost and is not a scaling measurement.
 Set `DRY_RUN=1` to preview commands. Validation is enabled by default.
+Generic Trident scripts also accept `VARIANT=two_sided` or `VARIANT=hybrid`.
+Physical hybrid launches reserve one additional CPU core per rank for service;
+`THREADS` still specifies compute threads. Scripts do not allocate resources.
 See [experiment scripts](scripts/README.md) for all settings, separate result
 paths, and the weak-scaling input model.
 

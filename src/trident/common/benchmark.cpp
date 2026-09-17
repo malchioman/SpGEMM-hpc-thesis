@@ -83,7 +83,8 @@ void writeRecord(const Record& record, const std::string& path) {
 
 }  // namespace
 
-int runBenchmark(int argc, char** argv, const std::string& implementation, ExchangeFactory factory) {
+int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
+    const auto& implementation = backend.implementation;
     RunOptions run;
     // Parse before MPI initialization so --help can use the existing common parser's normal exit.
     try {
@@ -93,11 +94,14 @@ int runBenchmark(int argc, char** argv, const std::string& implementation, Excha
         return EXIT_FAILURE;
     }
     int provided = MPI_THREAD_SINGLE;
-    if (MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided) != MPI_SUCCESS) {
+    if (MPI_Init_thread(&argc, &argv, backend.threadLevel, &provided) != MPI_SUCCESS) {
         std::cerr << "MPI_Init_thread failed\n";
         return EXIT_FAILURE;
     }
-    if (provided < MPI_THREAD_FUNNELED) fail("MPI_THREAD_FUNNELED is required", MPI_COMM_WORLD);
+    if (provided < backend.threadLevel) {
+        fail(backend.threadLevel == MPI_THREAD_MULTIPLE ? "MPI_THREAD_MULTIPLE is required"
+                                                       : "MPI_THREAD_FUNNELED is required", MPI_COMM_WORLD);
+    }
     int exitCode = EXIT_SUCCESS;
     try {
         const auto& options = run.benchmark;
@@ -137,24 +141,25 @@ int runBenchmark(int argc, char** argv, const std::string& implementation, Excha
         const double setupStart = MPI_Wtime();
         const auto plan = preparePlan(a, b, grid);
         ProductWorkspace workspace(plan);
-        auto exchange = factory(grid, plan);
+        auto exchange = backend.intraFactory(grid, plan);
+        auto inter = backend.interFactory(grid, plan);
         checkMpi(MPI_Barrier(grid.world), "MPI_Barrier(setup complete)", grid.world);
         const double setupEnd = MPI_Wtime();
-        auto product = multiply(a, b, grid, plan, *exchange, workspace);
+        auto product = multiply(a, b, plan, *exchange, workspace, *inter);
         const double firstEnd = MPI_Wtime();
         const double setupSeconds = maxRankValue(setupEnd - setupStart, grid.world);
         const double firstSeconds = maxRankValue(firstEnd - setupStart, grid.world);
 
         for (int i = 0; i < options.warmup; ++i) {
             checkMpi(MPI_Barrier(grid.world), "MPI_Barrier(warmup)", grid.world);
-            product = multiply(a, b, grid, plan, *exchange, workspace);
+            product = multiply(a, b, plan, *exchange, workspace, *inter);
         }
         std::array<std::vector<double>, 5> samples;
         for (int trial = 0; trial < options.trials; ++trial) {
             for (int repeat = 0; repeat < options.repeats; ++repeat) {
                 checkMpi(MPI_Barrier(grid.world), "MPI_Barrier(sample)", grid.world);
                 const double sampleStart = MPI_Wtime();
-                product = multiply(a, b, grid, plan, *exchange, workspace);
+                product = multiply(a, b, plan, *exchange, workspace, *inter);
                 const double sampleSeconds = MPI_Wtime() - sampleStart;
                 const std::array<double, 5> local{
                     product.interNodeSeconds, product.intraNodeSeconds,
@@ -183,7 +188,7 @@ int runBenchmark(int argc, char** argv, const std::string& implementation, Excha
             const std::string aSource = options.matrixAPath.empty() ? "synthetic" : options.matrixAPath;
             const std::string bSource = options.matrixBPath.empty() ? aSource : options.matrixBPath;
             Record record{
-                {"implementation", implementation}, {"benchmark_protocol", "trident_staged_csr_v1"},
+                {"implementation", implementation}, {"benchmark_protocol", backend.protocol},
                 {"experiment", options.experiment}, {"matrix_a_source", aSource}, {"matrix_b_source", bSource},
                 {"a_rows", number(shape[0])}, {"a_cols", number(shape[1])},
                 {"b_rows", number(shape[2])}, {"b_cols", number(shape[3])},
@@ -195,8 +200,8 @@ int runBenchmark(int argc, char** argv, const std::string& implementation, Excha
                 {"nodes", number(grid.nodeCount)}, {"ranks_per_node", number(grid.nodeSize)},
                 {"grid_rows", number(grid.side)}, {"grid_cols", number(grid.side)},
                 {"topology", grid.emulated ? "logical_test" : "physical"},
-                {"inter_node_transport", "two_sided_static_cannon"},
-                {"intra_node_transport", implementation},
+                {"inter_node_transport", backend.interTransport},
+                {"intra_node_transport", backend.intraTransport},
                 {"distribution_seconds", number(distributionSeconds)},
                 {"plan_setup_seconds", number(setupSeconds)}, {"first_product_seconds", number(firstSeconds)},
                 {"inter_node_p90_seconds", number(p90[0])}, {"intra_node_p90_seconds", number(p90[1])},
@@ -212,6 +217,8 @@ int runBenchmark(int argc, char** argv, const std::string& implementation, Excha
                       << "results_file=" << options.resultsPath << '\n';
         }
         checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, grid.world), "MPI_Bcast(validation)", grid.world);
+        inter->close();
+        inter.reset();
         exchange.reset();
         grid.close();
     } catch (const std::exception& error) {

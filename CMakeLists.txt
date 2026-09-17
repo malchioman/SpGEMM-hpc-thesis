@@ -4,6 +4,7 @@ project(spgemm_hpc_thesis LANGUAGES CXX)
 
 find_package(MPI REQUIRED COMPONENTS CXX)
 find_package(OpenMP REQUIRED)
+find_package(Threads REQUIRED)
 
 function(enable_project_warnings target_name)
     if(MSVC)
@@ -53,13 +54,15 @@ add_library(trident_support STATIC
     src/trident/common/process_grid.cpp
     src/trident/common/matrix_blocks.cpp
     src/trident/common/execution.cpp
+    src/trident/common/csr_transfer.cpp
+    src/trident/common/intra_node_two_sided.cpp
     src/trident/common/benchmark.cpp
 )
 target_include_directories(trident_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/common)
 target_link_libraries(trident_support PUBLIC spgemm_support)
 enable_project_warnings(trident_support)
 
-add_library(trident_two_sided_support STATIC src/trident/two_sided/intra_node_exchange.cpp)
+add_library(trident_two_sided_support STATIC src/trident/two_sided/inter_node_exchange.cpp)
 target_include_directories(trident_two_sided_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/two_sided)
 target_link_libraries(trident_two_sided_support PUBLIC trident_support)
 enable_project_warnings(trident_two_sided_support)
@@ -67,6 +70,15 @@ enable_project_warnings(trident_two_sided_support)
 add_executable(trident_two_sided src/trident/two_sided/main_two_sided.cpp)
 target_link_libraries(trident_two_sided PRIVATE trident_two_sided_support)
 enable_project_warnings(trident_two_sided)
+
+add_library(trident_hybrid_support STATIC src/trident/hybrid/inter_node_exchange.cpp)
+target_include_directories(trident_hybrid_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/hybrid)
+target_link_libraries(trident_hybrid_support PUBLIC trident_support Threads::Threads)
+enable_project_warnings(trident_hybrid_support)
+
+add_executable(trident_hybrid src/trident/hybrid/main_hybrid.cpp)
+target_link_libraries(trident_hybrid PRIVATE trident_hybrid_support)
+enable_project_warnings(trident_hybrid)
 
 add_executable(matrix_market_smoke
     tests/matrix_market_smoke.cpp
@@ -96,7 +108,12 @@ target_compile_features(spgemm_validation_smoke PRIVATE cxx_std_17)
 target_link_libraries(spgemm_validation_smoke PRIVATE spgemm_support)
 enable_project_warnings(spgemm_validation_smoke)
 
+add_executable(spgemm_options_smoke tests/spgemm_options_smoke.cpp)
+target_link_libraries(spgemm_options_smoke PRIVATE spgemm_support)
+enable_project_warnings(spgemm_options_smoke)
+
 enable_testing()
+add_test(NAME spgemm_options_smoke COMMAND spgemm_options_smoke)
 if(UNIX)
     find_program(BASH_EXECUTABLE bash)
     if(BASH_EXECUTABLE)
@@ -177,9 +194,21 @@ set_tests_properties(spgemm_distributed_smoke spgemm_one_sided_get_smoke
                      spgemm_one_sided_put_smoke PROPERTIES
                      FAIL_REGULAR_EXPRESSION "validation=FAIL" TIMEOUT 60)
 
-foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided)
+foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided trident_hybrid)
+    add_test(NAME ${target_name}_reject_malformed_numbers
+        COMMAND ${CMAKE_COMMAND}
+                "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
+                "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+                "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}"
+                "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+                "-DBENCHMARK=$<TARGET_FILE:${target_name}>"
+                "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/${target_name}_invalid_numbers.tsv"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_numeric_options.cmake)
+    set_tests_properties(${target_name}_reject_malformed_numbers PROPERTIES TIMEOUT 75 PROCESSORS 2)
     if(target_name STREQUAL "trident_two_sided")
         set(expected_protocol trident_staged_csr_v1)
+    elseif(target_name STREQUAL "trident_hybrid")
+        set(expected_protocol trident_hybrid_rma_requests_v1)
     else()
         set(expected_protocol prepared_halo_v2)
     endif()

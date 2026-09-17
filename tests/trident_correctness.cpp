@@ -1,13 +1,37 @@
-#include "intra_node_exchange.hpp"
+#include "inter_node_exchange.hpp"
+#include "intra_node_two_sided.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
+#include <thread>
 
 namespace {
+
+#ifdef TRIDENT_HYBRID
+constexpr int threadLevel = MPI_THREAD_MULTIPLE;
+#else
+constexpr int threadLevel = MPI_THREAD_FUNNELED;
+#endif
+
+class TestExchange final : public trident::IntraNodeExchange {
+public:
+    TestExchange(const trident::ProcessGrid& grid, bool skew)
+        : inner_(grid), rank_(grid.rank), skew_(skew) {}
+    void assemble(const CsrMatrix& slice, const trident::Stage& stage, CsrMatrix& panel) override {
+        if (skew_) std::this_thread::sleep_for(std::chrono::milliseconds((rank_ + stage.inner) % 3));
+        inner_.assemble(slice, stage, panel);
+    }
+private:
+    trident::TwoSidedIntraNodeExchange inner_;
+    int rank_;
+    bool skew_;
+};
 
 CsrMatrix sparseInput(int rows, int cols, int salt) {
     CsrMatrix result;
@@ -72,17 +96,40 @@ void checkProduct(const CsrMatrix& a, const CsrMatrix& b, const CsrMatrix& actua
     }
 }
 
-void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& grid) {
+void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& grid, bool skew = false) {
     auto a = trident::distributeBlocks(&globalA, globalA.rows, globalA.cols, grid);
     auto b = trident::distributeBlocks(&globalB, globalB.rows, globalB.cols, grid);
     const auto plan = trident::preparePlan(a, b, grid);
     trident::ProductWorkspace workspace(plan);
-    trident::TwoSidedIntraNodeExchange exchange(grid);
+    TestExchange exchange(grid, skew);
+    std::unique_ptr<trident::InterNodeExchange> inter;
+#ifdef TRIDENT_HYBRID
+    inter = std::make_unique<trident::HybridInterNodeExchange>(grid);
+#else
+    inter = std::make_unique<trident::TwoSidedInterNodeExchange>(grid);
+#endif
+    std::vector<CsrMatrix> products;
+    std::vector<CsrMatrix> inputsB;
+    const int repetitions = skew ? 24 : 3;
     // Reuse the plan after changing values and indices (all tile sizes stay fixed).
-    for (int repeat = 0; repeat < 3; ++repeat) {
-        const auto product = trident::multiply(a, b, grid, plan, exchange, workspace);
-        const auto actual = trident::gatherBlocks(product.matrix, globalA.rows, globalB.cols, grid);
-        if (grid.rank == 0) checkProduct(globalA, globalB, actual);
+    for (int repeat = 0; repeat < repetitions; ++repeat) {
+        if (skew) std::this_thread::sleep_for(std::chrono::milliseconds((grid.rank + repeat) % 4));
+        auto product = trident::multiply(a, b, plan, exchange, workspace, *inter);
+#ifdef TRIDENT_HYBRID
+        const auto& hybrid = static_cast<const trident::HybridInterNodeExchange&>(*inter);
+        const auto expected = static_cast<std::uint64_t>(repeat + 1) * 2 * (grid.side - 1);
+        if (hybrid.publishedRequests() != expected || hybrid.servedRequests() != expected) {
+            throw std::runtime_error("missing or duplicate hybrid requests");
+        }
+#endif
+        if (skew) {
+            // No gather/barrier between generations: faster ranks may request the next product.
+            products.push_back(std::move(product.matrix));
+            if (grid.rank == 0) inputsB.push_back(globalB);
+        } else {
+            const auto actual = trident::gatherBlocks(product.matrix, globalA.rows, globalB.cols, grid);
+            if (grid.rank == 0) checkProduct(globalA, globalB, actual);
+        }
         for (double& value : b.values) value *= -2.0;
         for (double& value : globalB.values) value *= -2.0;
         // Rotate within each coarse column block to preserve ownership and message sizes.
@@ -93,14 +140,19 @@ void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& g
             col = block.firstRow + (col - block.firstRow + 1) % block.rows;
         }
     }
+    for (std::size_t i = 0; i < products.size(); ++i) {
+        const auto actual = trident::gatherBlocks(products[i], globalA.rows, globalB.cols, grid);
+        if (grid.rank == 0) checkProduct(globalA, inputsB[i], actual);
+    }
+    inter->close();
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     int provided = MPI_THREAD_SINGLE;
-    if (MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided) != MPI_SUCCESS) return EXIT_FAILURE;
-    if (provided < MPI_THREAD_FUNNELED) fail("insufficient MPI thread level", MPI_COMM_WORLD);
+    if (MPI_Init_thread(&argc, &argv, threadLevel, &provided) != MPI_SUCCESS) return EXIT_FAILURE;
+    if (provided < threadLevel) fail("insufficient MPI thread level", MPI_COMM_WORLD);
     try {
         omp_set_dynamic(0);
         omp_set_num_threads(2);
@@ -111,6 +163,9 @@ int main(int argc, char** argv) {
         MPI_Comm reversed = MPI_COMM_NULL;
         checkMpi(MPI_Comm_split(MPI_COMM_WORLD, 0, -worldRank, &reversed), "MPI_Comm_split", MPI_COMM_WORLD);
         trident::ProcessGrid grid(reversed, argc > 1 ? std::stoi(argv[1]) : 0);
+        if (argc > 2 && std::string(argv[2]) == "skew") {
+            runCase(sparseInput(19, 23, 1), sparseInput(23, 13, 2), grid, true);
+        }
         if (argc > 2 && std::string(argv[2]) == "large") {
             // Payloads exceed common eager thresholds, exercising matched rendezvous transfers.
             runCase(sparseInput(385, 389, 1), sparseInput(389, 383, 2), grid);

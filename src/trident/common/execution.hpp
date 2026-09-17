@@ -48,6 +48,17 @@ struct ProductWorkspace {
     CsrMatrix panel;
 };
 
+class InterNodeExchange {
+public:
+    virtual ~InterNodeExchange() = default;
+    virtual void begin(const CsrMatrix& a, const CsrMatrix& b) = 0;
+    virtual void fetch(const CsrMatrix& a, const CsrMatrix& b, const Stage& stage,
+                       ProductWorkspace& workspace) = 0;
+    virtual void finish() = 0;
+    // Collective resource cleanup is explicit, never performed while unwinding exceptions.
+    virtual void close() = 0;
+};
+
 struct ProductResult {
     CsrMatrix matrix;
     double interNodeSeconds = 0.0;
@@ -56,9 +67,9 @@ struct ProductResult {
     double totalSeconds = 0.0;
 };
 
-// Static owners and the staggered schedule are shared by every intra-node backend.
-ProductResult multiply(const CsrMatrix& a, const CsrMatrix& b, const ProcessGrid& grid,
-                       const ExecutionPlan& plan, IntraNodeExchange& exchange,
-                       ProductWorkspace& workspace);
+// Static owners and the staggered schedule are shared by all communication backends.
+ProductResult multiply(const CsrMatrix& a, const CsrMatrix& b, const ExecutionPlan& plan,
+                       IntraNodeExchange& exchange, ProductWorkspace& workspace,
+                       InterNodeExchange& inter);
 
 }  // namespace trident
