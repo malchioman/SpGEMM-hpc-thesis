@@ -16,6 +16,15 @@ add_executable(trident_get_lifecycle tests/trident_get_lifecycle.cpp)
 target_link_libraries(trident_get_lifecycle PRIVATE trident_get_support Threads::Threads)
 enable_project_warnings(trident_get_lifecycle)
 
+add_executable(trident_get_pipeline_correctness tests/trident_correctness.cpp)
+target_compile_definitions(trident_get_pipeline_correctness PRIVATE TRIDENT_GET_PIPELINE)
+target_link_libraries(trident_get_pipeline_correctness PRIVATE trident_get_pipeline_support Threads::Threads)
+enable_project_warnings(trident_get_pipeline_correctness)
+
+add_executable(trident_get_pipeline_lifecycle tests/trident_get_pipeline_lifecycle.cpp)
+target_link_libraries(trident_get_pipeline_lifecycle PRIVATE trident_get_pipeline_support Threads::Threads)
+enable_project_warnings(trident_get_pipeline_lifecycle)
+
 foreach(layout IN ITEMS 1x1 1x3 2x1 2x2 3x1)
     if(layout STREQUAL "1x1")
         set(ranks 1)
@@ -49,6 +58,12 @@ foreach(layout IN ITEMS 1x1 1x3 2x1 2x2 3x1)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
                 ${MPIEXEC_PREFLAGS} $<TARGET_FILE:trident_get_lifecycle> ${MPIEXEC_POSTFLAGS} ${node_size})
     set_tests_properties(trident_get_lifecycle_${layout} PROPERTIES TIMEOUT 90 PROCESSORS ${ranks})
+    foreach(test_kind IN ITEMS correctness lifecycle)
+        add_test(NAME trident_get_pipeline_${test_kind}_${layout}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:trident_get_pipeline_${test_kind}> ${MPIEXEC_POSTFLAGS} ${node_size})
+        set_tests_properties(trident_get_pipeline_${test_kind}_${layout} PROPERTIES TIMEOUT 90 PROCESSORS ${ranks})
+    endforeach()
 endforeach()
 
 add_test(NAME trident_correctness_large_messages
@@ -65,6 +80,10 @@ foreach(mode IN ITEMS large skew)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
                 ${MPIEXEC_PREFLAGS} $<TARGET_FILE:trident_get_correctness> ${MPIEXEC_POSTFLAGS} 2 ${mode})
     set_tests_properties(trident_get_correctness_${mode} PROPERTIES TIMEOUT 90 PROCESSORS 8)
+    add_test(NAME trident_get_pipeline_correctness_${mode}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:trident_get_pipeline_correctness> ${MPIEXEC_POSTFLAGS} 2 ${mode})
+    set_tests_properties(trident_get_pipeline_correctness_${mode} PROPERTIES TIMEOUT 90 PROCESSORS 8)
 endforeach()
 
 foreach(input_case IN ITEMS hierarchical invalid_grid invalid_logical)
@@ -96,4 +115,14 @@ foreach(input_case IN ITEMS hierarchical invalid_grid invalid_logical)
             "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/trident_get_${input_case}.tsv"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_trident_cli.cmake)
     set_tests_properties(trident_get_cli_${input_case} PROPERTIES TIMEOUT 60 PROCESSORS 8)
+    add_test(NAME trident_get_pipeline_cli_${input_case}
+        COMMAND ${CMAKE_COMMAND}
+            "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}" "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+            "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+            "-DBENCHMARK=$<TARGET_FILE:trident_get_pipeline>" "-DINPUT_CASE=${input_case}"
+            "-DEXPECTED_PROTOCOL=trident_get_pipeline_csr_v1"
+            "-DEXPECTED_INTER_TRANSPORT=one_sided_get_pipeline"
+            "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/trident_get_pipeline_${input_case}.tsv"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_trident_cli.cmake)
+    set_tests_properties(trident_get_pipeline_cli_${input_case} PROPERTIES TIMEOUT 60 PROCESSORS 8)
 endforeach()

@@ -19,7 +19,8 @@ and [Semantics and Correctness](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-rep
 
 - `common/process_grid`, `matrix_blocks`, `execution` and `benchmark` remain shared.
 - `common/intra_node_two_sided` assembles B inside each node unchanged.
-- `get/inter_node_exchange` implements exposure, publication, retrieval and cleanup.
+- `common/rma_get` implements exposure, publication, split-phase retrieval and cleanup.
+- `get/inter_node_exchange` issues and completes each current-stage retrieval immediately.
 - `get/main_get.cpp` selects the backend and benchmark metadata.
 
 Inter-node factories now receive the local input matrices during setup, allowing
@@ -103,9 +104,10 @@ different CPU budget. No claim of higher performance is made before cluster test
 
 The existing limits remain: centralized input/gather, global A/B on rank 0 even
 with `--no-validate`, int-sized CSR/MPI counts and per-row hash accumulators.
-The GET backend additionally requires stable exposed input storage. A future
-pipelined GET must add separate in-flight buffers and completion handling;
-changing the MPI primitive alone would not provide overlap.
+The GET backend additionally requires stable exposed input storage.
+[Pipelined GET](trident_get_pipeline.md) reuses the same RMA transport, but adds a
+second A/B pair and defers completion of the next stage while consuming the
+current one. This simple GET executable remains the non-pipelined reference.
 
 ## Tests
 

@@ -4,6 +4,7 @@
 
 namespace trident {
 
+void reserveTile(CsrMatrix& tile, TileShape shape);
 void resizeTile(CsrMatrix& tile, TileShape shape);
 void receiveTile(CsrMatrix& tile, int source, int tag, MPI_Comm comm,
                  std::vector<MPI_Request>& requests);

@@ -2,6 +2,12 @@
 
 namespace trident {
 
+void reserveTile(CsrMatrix& tile, TileShape shape) {
+    tile.rowPtr.reserve(static_cast<std::size_t>(shape.rows) + 1);
+    tile.columnIndices.reserve(shape.nnz);
+    tile.values.reserve(shape.nnz);
+}
+
 void resizeTile(CsrMatrix& tile, TileShape shape) {
     tile.rows = shape.rows;
     tile.cols = shape.cols;

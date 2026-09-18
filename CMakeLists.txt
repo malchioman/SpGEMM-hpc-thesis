@@ -55,6 +55,7 @@ add_library(trident_support STATIC
     src/trident/common/matrix_blocks.cpp
     src/trident/common/execution.cpp
     src/trident/common/csr_transfer.cpp
+    src/trident/common/rma_get.cpp
     src/trident/common/intra_node_two_sided.cpp
     src/trident/common/benchmark.cpp
 )
@@ -88,6 +89,15 @@ enable_project_warnings(trident_get_support)
 add_executable(trident_get src/trident/get/main_get.cpp)
 target_link_libraries(trident_get PRIVATE trident_get_support)
 enable_project_warnings(trident_get)
+
+add_library(trident_get_pipeline_support STATIC src/trident/get_pipeline/inter_node_exchange.cpp)
+target_include_directories(trident_get_pipeline_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/trident/get_pipeline)
+target_link_libraries(trident_get_pipeline_support PUBLIC trident_support)
+enable_project_warnings(trident_get_pipeline_support)
+
+add_executable(trident_get_pipeline src/trident/get_pipeline/main_get_pipeline.cpp)
+target_link_libraries(trident_get_pipeline PRIVATE trident_get_pipeline_support)
+enable_project_warnings(trident_get_pipeline)
 
 add_executable(matrix_market_smoke
     tests/matrix_market_smoke.cpp
@@ -203,7 +213,7 @@ set_tests_properties(spgemm_distributed_smoke spgemm_one_sided_get_smoke
                      spgemm_one_sided_put_smoke PROPERTIES
                      FAIL_REGULAR_EXPRESSION "validation=FAIL" TIMEOUT 60)
 
-foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided trident_hybrid trident_get)
+foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_sided_put trident_two_sided trident_hybrid trident_get trident_get_pipeline)
     add_test(NAME ${target_name}_reject_malformed_numbers
         COMMAND ${CMAKE_COMMAND}
                 "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
@@ -220,6 +230,8 @@ foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_si
         set(expected_protocol trident_hybrid_rma_requests_v1)
     elseif(target_name STREQUAL "trident_get")
         set(expected_protocol trident_get_csr_v1)
+    elseif(target_name STREQUAL "trident_get_pipeline")
+        set(expected_protocol trident_get_pipeline_csr_v1)
     else()
         set(expected_protocol prepared_halo_v2)
     endif()
