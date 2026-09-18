@@ -1,5 +1,7 @@
 #include "execution.hpp"
 
+#include "csr_transfer.hpp"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -52,15 +54,10 @@ ExecutionPlan preparePlan(const CsrMatrix& a, const CsrMatrix& b, const ProcessG
 }
 
 ProductWorkspace::ProductWorkspace(const ExecutionPlan& plan) {
-    auto reserve = [](CsrMatrix& matrix, TileShape shape) {
-        matrix.rowPtr.reserve(static_cast<std::size_t>(shape.rows) + 1);
-        matrix.columnIndices.reserve(shape.nnz);
-        matrix.values.reserve(shape.nnz);
-    };
     for (const auto& stage : plan.stages) {
-        reserve(a, stage.a);
-        reserve(b, stage.b);
-        reserve(panel, stage.panel);
+        reserveTile(a, stage.a);
+        reserveTile(b, stage.b);
+        reserveTile(panel, stage.panel);
     }
 }
 

@@ -12,6 +12,8 @@ for its RMA queues, service thread, resource requirements, and timing difference
 The third executable, `trident_get`, replaces inter-node payload exchange with
 direct RMA reads while retaining two-sided intra-node aggregation. See
 [Trident GET](trident_get.md) for its product-boundary synchronization and timing.
+The fourth executable, `trident_get_pipeline`, reuses the GET transport with
+double buffering and one-stage lookahead. See [pipelined GET](trident_get_pipeline.md).
 
 ## Source provenance and reuse
 
@@ -42,6 +44,7 @@ src/trident/
     matrix_blocks.*  hierarchical distribution, gather, CPU accumulation
     execution.*      static-Cannon plan, backend interfaces, product driver
     csr_transfer.*   CSR resizing and two-sided payload helpers
+    rma_get.*        shared GET input windows, issue/completion and synchronization
     intra_node_two_sided.*  shared node-local B aggregation
     benchmark.*      input/options, timing, validation, TSV output
   two_sided/
@@ -53,11 +56,14 @@ src/trident/
   get/
     inter_node_exchange.*
     main_get.cpp
+  get_pipeline/
+    inter_node_exchange.*
+    main_get_pipeline.cpp
 ```
 
 `trident_support` depends only on the project's `spgemm_support` and includes the
 shared two-sided intra-node backend. `trident_two_sided_support`,
-`trident_hybrid_support` and `trident_get_support` each add their own inter-node
+`trident_hybrid_support`, `trident_get_support` and `trident_get_pipeline_support` each add their own inter-node
 backend; hybrid also links the thread runtime. None depends on another variant's library or on
 `spgemm_baseline_support` and its halo data structures.
 `IntraNodeExchange::assemble` is the substitution point for future intra-node
@@ -65,9 +71,10 @@ GET or PUT aggregation protocols. All current versions explicitly supply an
 `InterNodeExchange` (`begin/fetch/finish/close`) and reuse the same two-sided
 intra-node backend. The product driver has no implicit two-sided fallback.
 Grids, matrix ownership, input rules, local
-accumulator, and benchmark driver remain shared. A pipeline would additionally
-need an explicit start/completion interface and multiple buffers; merely
-replacing an MPI call does not implement overlap.
+accumulator, and benchmark driver remain shared. The two GET backends share
+`GetTileTransport::startFetch/completeFetch`; the pipeline additionally uses a
+second A/B pair and starts the next stage before intra-node aggregation and
+computation of the current stage. The shared product loop remains unchanged.
 
 ## Partition and execution
 

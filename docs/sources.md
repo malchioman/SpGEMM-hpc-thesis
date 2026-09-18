@@ -55,6 +55,14 @@ flushes, and uses publication/completion barriers to separate products. This
 protocol is not attributed to the original GPU implementation; its partitioning
 and local aggregation retain the shared Trident provenance.
 
+The pipelined GET variant uses the same MPI GET/flush semantics and shared RMA
+transport, with two alternating A/B buffer pairs and one-stage lookahead. It
+delays completion of the next stage until its data are needed; it does not change
+partitioning or intra-node aggregation. This CPU schedule is an experimental
+variant, not an attribution to the GPU implementation, and does not by itself
+prove autonomous MPI progress or effective overlap. See
+[pipelined GET](trident_get_pipeline.md) for scheduling, lifetime and timing rules.
+
 The new code is a CPU reimplementation of these algorithmic components, not a
 direct copy of the GPU source. [The provenance mapping and differences](trident.md)
 document the changed range splitting, actual-node discovery, OpenMP kernel,
@@ -89,5 +97,5 @@ paper is not evidence for the performance of these CPU versions.
 
 Trident retains the input and validation policies above but uses different
 partitioning, payloads and timing protocols (`trident_staged_csr_v1` and
-`trident_hybrid_rma_requests_v1` and `trident_get_csr_v1`); see
+`trident_hybrid_rma_requests_v1`, `trident_get_csr_v1` and `trident_get_pipeline_csr_v1`); see
 [Trident CPU](trident.md). The baseline halo assumptions do not describe Trident.

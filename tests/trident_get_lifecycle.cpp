@@ -80,6 +80,20 @@ int main(int argc, char** argv) {
         exchange.close();
         expectRejected([&] { exchange.begin(a, b); }, "begin after close accepted");
         expectRejected([&] { exchange.close(); }, "duplicate close accepted");
+        trident::GetTileTransport transfer(grid, a, b);
+        expectRejected([&] { transfer.completeFetch(); }, "completion without a product accepted");
+        transfer.begin(a, b);
+        expectRejected([&] { transfer.completeFetch(); }, "completion without a fetch accepted");
+        transfer.startFetch(a, b, stage, workspace.a, workspace.b);
+        expectRejected([&] { transfer.startFetch(a, b, stage, workspace.a, workspace.b); },
+                       "overlapping use of GET destination buffers accepted");
+        expectRejected([&] { transfer.finish(); }, "finish with outstanding GET accepted");
+        transfer.completeFetch();
+        checkTile(workspace.a, stage.aSource, 23, 1);
+        checkTile(workspace.b, stage.bSource, 23, 2);
+        expectRejected([&] { transfer.completeFetch(); }, "duplicate completion accepted");
+        transfer.finish();
+        transfer.close();
         if (grid.rank == 0) std::cout << "GET full-CSR freshness, input binding and lifecycle: PASS\n";
         grid.close();
     } catch (const std::exception& error) {

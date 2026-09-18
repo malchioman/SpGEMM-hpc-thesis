@@ -4,7 +4,7 @@
 owners, staggered stage order, C-stationary OpenMP kernel, input rules, and
 node-local B aggregation. It changes the **inter-node** protocol: consumers
 publish requests through MPI RMA and owners respond with two-sided CSR payloads.
-It is not an intra-node GET backend or the future pipelined version.
+It is not an intra-node GET backend or the [pipelined GET version](trident_get_pipeline.md).
 
 ## Source and adaptation
 
