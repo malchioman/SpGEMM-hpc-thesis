@@ -63,6 +63,15 @@ variant, not an attribution to the GPU implementation, and does not by itself
 prove autonomous MPI progress or effective overlap. See
 [pipelined GET](trident_get_pipeline.md) for scheduling, lifetime and timing rules.
 
+The staged PUT variant is another CPU transport experiment based on MPI 4.1
+[Put](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node317.htm),
+[Flush and Sync](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node331.htm)
+and [RMA semantics](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node337.htm).
+It pushes full CSR slices into fixed workspace buffers, with readiness and
+completion barriers at every stage and window syncs before local access. This
+is not the original GPU queue protocol and has no pipeline. See
+[staged PUT](trident_put.md) for the mapping, lifetime and synchronization costs.
+
 The new code is a CPU reimplementation of these algorithmic components, not a
 direct copy of the GPU source. [The provenance mapping and differences](trident.md)
 document the changed range splitting, actual-node discovery, OpenMP kernel,
@@ -96,6 +105,7 @@ paper is not evidence for the performance of these CPU versions.
 - Rank 0 gathers the distributed CSR result and, by default, validates it against a serial SpGEMM implementation outside the timed samples. The benchmark-specific validation policy requires a maximum absolute error strictly below `1e-10` and rejects non-finite values in either result. A failed validation is recorded as `FAIL`; its status is broadcast to all ranks, which return a nonzero exit code after normal MPI cleanup. The project-specific `--no-validate` flag skips the serial product and comparison, reports `SKIPPED` with `max_abs_error=NA`, and permits a successful exit without certifying numerical correctness. It does not disable input checks or final result gathering, nor remove global A and B from rank 0.
 
 Trident retains the input and validation policies above but uses different
-partitioning, payloads and timing protocols (`trident_staged_csr_v1` and
-`trident_hybrid_rma_requests_v1`, `trident_get_csr_v1` and `trident_get_pipeline_csr_v1`); see
+partitioning, payloads and timing protocols (`trident_staged_csr_v1`,
+`trident_hybrid_rma_requests_v1`, `trident_get_csr_v1`, `trident_get_pipeline_csr_v1`
+and `trident_put_staged_csr_v1`); see
 [Trident CPU](trident.md). The baseline halo assumptions do not describe Trident.

@@ -11,7 +11,8 @@ std::unique_ptr<trident::IntraNodeExchange> makeIntra(const trident::ProcessGrid
 
 std::unique_ptr<trident::InterNodeExchange> makeInter(const trident::ProcessGrid& grid,
                                                    const trident::ExecutionPlan&,
-                                                   const CsrMatrix& a, const CsrMatrix& b) {
+                                                   const CsrMatrix& a, const CsrMatrix& b,
+                                                   trident::ProductWorkspace&) {
     return std::make_unique<trident::GetInterNodeExchange>(grid, a, b);
 }
 

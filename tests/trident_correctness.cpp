@@ -109,6 +109,8 @@ void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& g
     inter = std::make_unique<trident::GetInterNodeExchange>(grid, a, b);
 #elif defined(TRIDENT_GET_PIPELINE)
     inter = std::make_unique<trident::PipelinedGetInterNodeExchange>(grid, plan, a, b);
+#elif defined(TRIDENT_PUT)
+    inter = std::make_unique<trident::PutInterNodeExchange>(grid, plan, a, b, workspace);
 #else
     inter = std::make_unique<trident::TwoSidedInterNodeExchange>(grid);
 #endif
