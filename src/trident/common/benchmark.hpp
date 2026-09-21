@@ -9,7 +9,8 @@ namespace trident {
 
 using ExchangeFactory = std::unique_ptr<IntraNodeExchange> (*)(const ProcessGrid&, const ExecutionPlan&);
 using InterNodeFactory = std::unique_ptr<InterNodeExchange> (*)(const ProcessGrid&, const ExecutionPlan&,
-                                                              const CsrMatrix&, const CsrMatrix&);
+                                                              const CsrMatrix&, const CsrMatrix&,
+                                                              ProductWorkspace&);
 
 struct BenchmarkBackend {
     std::string implementation;

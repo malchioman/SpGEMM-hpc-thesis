@@ -14,6 +14,8 @@ direct RMA reads while retaining two-sided intra-node aggregation. See
 [Trident GET](trident_get.md) for its product-boundary synchronization and timing.
 The fourth executable, `trident_get_pipeline`, reuses the GET transport with
 double buffering and one-stage lookahead. See [pipelined GET](trident_get_pipeline.md).
+The fifth executable, `trident_put`, pushes full CSR slices into fixed receive
+buffers, using two barriers per stage and no pipeline. See [staged PUT](trident_put.md).
 
 ## Source provenance and reuse
 
@@ -59,11 +61,15 @@ src/trident/
   get_pipeline/
     inter_node_exchange.*
     main_get_pipeline.cpp
+  put/
+    inter_node_exchange.*
+    main_put.cpp
 ```
 
 `trident_support` depends only on the project's `spgemm_support` and includes the
 shared two-sided intra-node backend. `trident_two_sided_support`,
-`trident_hybrid_support`, `trident_get_support` and `trident_get_pipeline_support` each add their own inter-node
+`trident_hybrid_support`, `trident_get_support`, `trident_get_pipeline_support` and
+`trident_put_support` each add their own inter-node
 backend; hybrid also links the thread runtime. None depends on another variant's library or on
 `spgemm_baseline_support` and its halo data structures.
 `IntraNodeExchange::assemble` is the substitution point for future intra-node
@@ -75,6 +81,9 @@ accumulator, and benchmark driver remain shared. The two GET backends share
 `GetTileTransport::startFetch/completeFetch`; the pipeline additionally uses a
 second A/B pair and starts the next stage before intra-node aggregation and
 computation of the current stage. The shared product loop remains unchanged.
+Inter-node factories receive the persistent workspace as well as the plan and
+inputs. PUT uses it to expose receive buffers during setup, without an extra
+received-payload copy; the other factories ignore this additional argument.
 
 ## Partition and execution
 

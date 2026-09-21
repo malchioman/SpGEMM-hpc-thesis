@@ -236,7 +236,7 @@ read_call 0
 expect_arg --no-validate
 run_case 17 trident/run_weak_scaling.sh VARIANT=hybrid BINARY="$hybrid_binary" MOCK_MPI_EXIT=17
 expect_runs 1
-for variant in get get_pipeline; do
+for variant in get get_pipeline put; do
   get_binary="$scratch/paths with spaces/trident_$variant"
   cp "$binary" "$get_binary"
   chmod +x "$get_binary"
@@ -268,7 +268,7 @@ for variant in get get_pipeline; do
   run_case 0 trident/run_weak_scaling.sh VARIANT="$variant" BINARY= DRY_RUN=1
   expect_runs 0
   grep -q "/build/trident_$variant" "$scratch/stdout" || fail "incorrect default $variant binary"
-  for settings in two_sided hybrid get get_pipeline; do
+  for settings in two_sided hybrid get get_pipeline put; do
     if [[ "$settings" == "$variant" ]]; then continue; fi
     run_case 2 trident/run_weak_scaling.sh VARIANT="$settings" BINARY="$get_binary"
     expect_runs 0

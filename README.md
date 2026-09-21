@@ -5,8 +5,8 @@ Multiplication (SpGEMM), computing `C = A * B` with `A`, `B`, and `C` stored as
 sparse CSR matrices.
 
 The repository contains three row-distributed `MPI + OpenMP` SpGEMM baselines
-and four hierarchical CPU Trident variants: `trident_two_sided`, `trident_hybrid`,
-`trident_get` and `trident_get_pipeline`.
+and five hierarchical CPU Trident variants: `trident_two_sided`, `trident_hybrid`,
+`trident_get`, `trident_get_pipeline` and `trident_put`.
 The baselines use the following communication variants:
 
 - `A` is distributed by contiguous row blocks; each rank computes the matching
@@ -45,6 +45,7 @@ src/
     hybrid/
     get/
     get_pipeline/
+    put/
 ```
 
 `common` contains CSR storage, Matrix Market input, shared MPI/benchmark helpers,
@@ -54,8 +55,8 @@ exchange code, and the distributed local kernel. `trident/common` contains the
 hierarchical process grid, partitioning, static-Cannon stage plan, CPU kernel,
 and benchmark driver shared by Trident variants. The shared two-sided intra-node
 backend lives in `trident/common/intra_node_two_sided.*`. `trident/two_sided`,
-`trident/hybrid`, `trident/get` and `trident/get_pipeline` each contain their own inter-node backend and
-executable entry point. All mains explicitly select an intra-node and an
+`trident/hybrid`, `trident/get`, `trident/get_pipeline` and `trident/put` each contain
+their own inter-node backend and executable entry point. All mains explicitly select an intra-node and an
 inter-node backend; no variant depends on another variant's library.
 Both GET variants reuse the input windows and split-phase GET/flush operations
 in `trident/common/rma_get.*`.
@@ -89,6 +90,12 @@ pairs: it starts the next stage before intra-node aggregation and computation of
 the current one. It remains FUNNELED, without an additional service core. Actual
 overlap depends on MPI progress; see [pipelined GET](docs/trident_get_pipeline.md)
 for scheduling, memory costs and interpretation of phase timings.
+
+`trident_put` pushes full CSR slices directly into the receivers' workspace with
+`MPI_Put`, without a pipeline or service worker. It remains FUNNELED and uses
+the same two-sided intra-node aggregation. Two barriers per stage protect buffer
+reuse and completed reception; their cost is included in product timings. See
+[staged PUT](docs/trident_put.md) for storage lifetime and comparison with GET.
 
 ## Build
 
@@ -176,7 +183,7 @@ and empty matrices, uneven partitions, ranks without rows, and multiple OpenMP
 threads. Trident adds hierarchical topology tests and independent dense-product
 checks, including cancellation and repeated products with changed input payloads.
 Parser tests cover every shared numeric option, malformed suffixes, integer
-bounds and zero warmup. MPI CLI regressions verify that all seven executables
+bounds and zero warmup. MPI CLI regressions verify that all eight executables
 reject malformed numeric arguments without writing benchmark results.
 
 Validation is enabled by default, runs outside the timed samples, and requires
@@ -256,6 +263,7 @@ bash scripts/trident/run_local_check.sh
 VARIANT=hybrid bash scripts/trident/run_local_check.sh
 VARIANT=get bash scripts/trident/run_local_check.sh
 VARIANT=get_pipeline bash scripts/trident/run_local_check.sh
+VARIANT=put bash scripts/trident/run_local_check.sh
 VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
   bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
 VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
@@ -265,11 +273,11 @@ VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
 Physical experiments require a suitable allocation or `HOSTFILE`; the local
 check uses logical nodes on localhost and is not a scaling measurement.
 Set `DRY_RUN=1` to preview commands. Validation is enabled by default.
-Generic Trident scripts accept `VARIANT=two_sided`, `VARIANT=hybrid`, `VARIANT=get`
-or `VARIANT=get_pipeline`. All four variants use the same scripts directly,
+Generic Trident scripts accept `VARIANT=two_sided`, `VARIANT=hybrid`, `VARIANT=get`,
+`VARIANT=get_pipeline` or `VARIANT=put`. All five variants use the same scripts directly,
 without variant-specific wrappers.
 Physical hybrid launches reserve one additional CPU core per rank for service;
-`THREADS` still specifies compute threads. Both GET variants and two-sided use `THREADS` cores
+`THREADS` still specifies compute threads. Both GET variants, PUT and two-sided use `THREADS` cores
 per rank. Scripts do not allocate resources.
 See [experiment scripts](scripts/README.md) for all settings, separate result
 paths, and the weak-scaling input model.

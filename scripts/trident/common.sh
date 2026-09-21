@@ -29,17 +29,18 @@ trident_init() {
       trident_hybrid) VARIANT=hybrid ;;
       trident_get) VARIANT=get ;;
       trident_get_pipeline) VARIANT=get_pipeline ;;
+      trident_put) VARIANT=put ;;
     esac
   fi
   VARIANT="${VARIANT:-two_sided}"
   case "$VARIANT" in
-    two_sided|get|get_pipeline) trident_service_threads=0 ;;
+    two_sided|get|get_pipeline|put) trident_service_threads=0 ;;
     hybrid) trident_service_threads=1 ;;
-    *) trident_error "VARIANT must be two_sided, hybrid, get or get_pipeline" ;;
+    *) trident_error "VARIANT must be two_sided, hybrid, get, get_pipeline or put" ;;
   esac
   BINARY="${BINARY:-$trident_repo/build/trident_$VARIANT}"
   case "${BINARY##*/}" in
-    trident_two_sided|trident_hybrid|trident_get|trident_get_pipeline)
+    trident_two_sided|trident_hybrid|trident_get|trident_get_pipeline|trident_put)
       [[ "${BINARY##*/}" == "trident_$VARIANT" ]] || trident_error "BINARY and VARIANT disagree" ;;
   esac
   MPI_LAUNCHER="${MPI_LAUNCHER:-mpirun}"
