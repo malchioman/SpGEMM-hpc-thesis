@@ -176,11 +176,12 @@ class MatrixToolsTest(unittest.TestCase):
                      source=dict(format="mtx", urls=["https://example.org/input.mtx"],
                                  page="https://example.org/"))
         body = self.source.read_bytes()
-        with mock.patch.object(matrices, "download", side_effect=lambda url, path: path.write_bytes(body)) as fetcher:
+        with mock.patch.object(matrices, "download", side_effect=lambda url, path, timeout: path.write_bytes(body)) as fetcher:
             with contextlib.redirect_stdout(io.StringIO()):
-                matrices.fetch(entry, self.root)
-                matrices.fetch(entry, self.root)
+                matrices.fetch(entry, self.root, timeout=0)
+                matrices.fetch(entry, self.root, timeout=0)
             self.assertEqual(fetcher.call_count, 1)
+            self.assertEqual(fetcher.call_args.kwargs["timeout"], 0)
         output = self.root / "direct.mtx"
         self.assertEqual(output.read_bytes(), body)
         record = json.loads((self.root / "metadata/direct.source.json").read_text())
@@ -198,7 +199,7 @@ class MatrixToolsTest(unittest.TestCase):
         entry = dict(id="bad", rows=4, cols=4, nnz=6, nnz_kind="expanded",
                      source=dict(format="mtx", urls=["https://example.org/input.mtx"],
                                  page="https://example.org/"))
-        with mock.patch.object(matrices, "download", side_effect=lambda url, path: path.write_bytes(self.source.read_bytes())):
+        with mock.patch.object(matrices, "download", side_effect=lambda url, path, timeout: path.write_bytes(self.source.read_bytes())):
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "expanded entries differ"):
                 matrices.fetch(entry, self.root)
         self.assertFalse((self.root / "bad.mtx").exists())
@@ -218,7 +219,8 @@ class MatrixToolsTest(unittest.TestCase):
         with tarfile.open(archive, "w:gz") as stream:
             stream.add(self.source, arcname="downloaded/downloaded.mtx")
         calls = []
-        def fake_download(url, path):
+        def fake_download(url, path, timeout):
+            self.assertEqual(timeout, 120)
             calls.append(url)
             if len(calls) == 1:
                 raise OSError("primary unavailable")
@@ -226,12 +228,25 @@ class MatrixToolsTest(unittest.TestCase):
         entry = dict(id="downloaded", group="fixture", rows=4, cols=4, nnz=9)
         with mock.patch.object(matrices, "download", side_effect=fake_download):
             with contextlib.redirect_stdout(io.StringIO()):
-                matrices.fetch(entry, self.root)
+                matrices.fetch(entry, self.root, timeout=120)
         self.assertEqual(len(calls), 2)
         record = json.loads((self.root / "metadata/downloaded.source.json").read_text())
         self.assertEqual(record["source_url"], calls[-1])
         self.assertEqual(record["archive_sha256"], matrices.sha256(archive))
         self.assertEqual(record["download_sha256"], record["archive_sha256"])
+
+    def test_download_timeout_preserves_bytes_and_can_disable_socket_deadline(self):
+        url = "https://example.org/input.mtx"
+        body = self.source.read_bytes()
+        for timeout, expected in ((0, None), (120, 120), (matrices.DEFAULT_DOWNLOAD_TIMEOUT, 300)):
+            with self.subTest(timeout=timeout):
+                response = io.BytesIO(body)
+                response.geturl = lambda: url
+                output = self.root / "download.mtx"
+                with mock.patch.object(matrices.urllib.request, "urlopen", return_value=response) as opener:
+                    matrices.download(url, output, timeout=timeout)
+                self.assertEqual(opener.call_args.kwargs["timeout"], expected)
+                self.assertEqual(output.read_bytes(), body)
 
     def test_changed_source_rejected_before_preparation(self):
         self.prepare()

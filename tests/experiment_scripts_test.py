@@ -146,7 +146,7 @@ class CampaignTest(unittest.TestCase):
 
     def test_logical_topology_is_isolated_and_validated(self):
         self.run_action("strong_scaling", "--variants", "trident_get", "--nodes", "4", "--local-check")
-        root = self.results / "tmp/local-check"
+        root = self.results / "local-check"
         row = self.rows("strong_scaling", root=root)[0]
         self.assertEqual((row["nodes"], row["ranks"], row["ranks_per_node"]), ("4", "8", "2"))
         self.assertEqual(row["cpus_per_rank"], "NA")

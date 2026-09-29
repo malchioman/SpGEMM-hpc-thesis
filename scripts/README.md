@@ -8,7 +8,7 @@ library. Benchmark timing code is unchanged.
 
 | Script | Purpose | Inputs / outputs |
 | --- | --- | --- |
-| `run_pilot.sh` | Correctness check of all eight implementations on square, permuted and rectangular products | `cage8`; `results/pilot/` |
+| `run_pilot.sh` | Correctness check of all eight implementations on square, permuted and rectangular products | `cage8`; `test-results/pilot/` |
 | `run_strong_scaling.sh` | Fixed `A*A` over selected node counts | All ten main matrices; `results/strong_scaling/` |
 | `analyze_phases.sh` | Export recorded phase timings, without new MPI runs | Strong scaling, permutation and rectangular observations; `results/phase_analysis/` |
 | `analyze_structure.sh` | Export original-square measurements with input/output densities and average input nnz per row | Strong scaling observations; `results/matrix_structure/` |
@@ -93,6 +93,20 @@ bash scripts/run_all.sh --help
 
 The pilot always validates, uses one independent launch per case/configuration,
 zero warmups, one repeat and one trial. It is excluded from both analysis exports.
+Use `--runs` to collect more independent MPI launches without repeating the whole
+workflow. For example, `--runs 5 --repeats 10 --trials 5` appends five observations
+per input pair, resource configuration and implementation; each observation
+summarizes 50 timed products as P90 values. The 50 products share the same MPI
+processes and are not 50 independent launches. A later rerun appends more rows;
+there is no resume or deduplication.
+
+`--timeout` on experiment scripts limits each complete MPI launch, including
+input loading, setup, all products, gathering and any serial validation. It is
+not a timeout for one multiplication or for the entire campaign. For example,
+`--timeout 7200` allows two hours per launch; `--timeout 0` imposes no script
+deadline. Scheduler walltime still limits the job. The 120-second timeout used
+for small functional checks should not be copied into the thesis campaign.
+
 `--matrices cage8` also selects cage8 for permutation unless an explicit
 `--permutation-matrices` is supplied. The pilot selection remains separate.
 
@@ -120,13 +134,25 @@ bash scripts/run_all.sh --build-dir build-wsl --local-check --nodes 1 \
 ```
 
 This mode enables validation, runs on localhost with oversubscription and no rank
-binding, and passes `--logical-node-size` to Trident. Results always go under
-`<results-dir>/tmp/local-check/`, including when a custom result root is supplied.
+binding, and passes `--logical-node-size` to Trident. Results go under
+`test-results/local-check/` by default. A result root inside the repository's
+`results/` tree is mirrored under `test-results/`; a custom root outside that
+tree is retained. Local checks append `local-check/` to the resulting root.
 They record `topology=logical_test` and `cpus_per_rank=NA`; these are functional
 checks, not physical strong-scaling measurements. Pass `--local-check` to the
 analysis scripts too when exporting these temporary observations.
 
 ## Result files and repetition
+
+`results/` is reserved for thesis measurements and analysis exports. Pilot checks
+are routed to `test-results/pilot/` by default, including during `run_all.sh`.
+For a physical-cluster rehearsal of the entire workflow, pass
+`--results-dir test-results/unitn-check` to keep all its stages together outside
+the thesis results. Use a fresh check directory for each rehearsal.
+
+Pilot and diagnostic paths inside the repository's `results/` tree are mirrored
+under `test-results/`, preserving any subdirectories. Explicit result roots
+outside that tree are used directly. Existing files are not moved automatically.
 
 Every experiment directory contains one TSV per selected executable, for example
 `results/strong_scaling/trident_get.tsv`. Actual runs append one row per completed
@@ -160,7 +186,8 @@ select **new runs**, not filters that discard previously collected observations.
 Input hashes are verified once per input per command, outside the measured region.
 An incompatible existing TSV header, incomplete row, bad exit status, unexpected
 protocol/topology or failed validation stops the campaign. A failed launch is not
-appended; diagnostics remain under `<results-dir>/tmp/`. Successful raw intermediate
+appended; diagnostics remain under `test-results/tmp/` by default, or `tmp/` under
+the corresponding check root for a custom result directory. Successful raw intermediate
 files are removed after their observation is appended. Completed observations
 survive a later failure. A result-directory lock prevents concurrent campaign/export
 writers. After a forcibly killed process, remove `.experiments.lock` only after
@@ -174,6 +201,12 @@ python3 scripts/matrices.py list --tier all
 python3 scripts/matrices.py fetch --tier all
 python3 scripts/matrices.py prepare --tier all --seed 42
 ```
+
+Downloads have no total-duration limit. The downloader's `--timeout` controls
+blocking network operations and defaults to 300 seconds. To disable that socket
+timeout explicitly, use `python3 scripts/matrices.py fetch --tier all --timeout 0`.
+Keeping a finite socket timeout allows fallback to another configured URL when
+a server stops responding. Disabling it does not fix HTTP errors or broken URLs.
 
 `all` selects the ten main matrices; `--ids cage8` selects the separate pilot.
 Original matrices and synthetic R inputs live in `bin/matrices/`, permutations in

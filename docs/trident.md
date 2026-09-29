@@ -152,7 +152,7 @@ Local correctness test of the 2x2-node, two-rank-per-node path:
 mpirun -np 8 ./build/trident_two_sided --logical-node-size 2 \
   --rows 19 --cols 23 --b-cols 13 --nnz-per-row 3 --b-nnz-per-row 2 \
   --threads 2 --warmup 1 --repeats 2 --trials 2 \
-  --results results/tmp/trident_logical.tsv
+  --results test-results/trident_logical.tsv
 ```
 
 `--logical-node-size` is accepted only when the whole job runs on a single

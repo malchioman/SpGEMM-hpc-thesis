@@ -20,6 +20,7 @@ import urllib.request
 
 REPO = Path(__file__).resolve().parents[1]
 INT_MAX = 2**31 - 1
+DEFAULT_DOWNLOAD_TIMEOUT = 300
 GENERATOR = "spgemm_inputs_v1"
 UPSTREAM = ("https://github.com/HicrestLaboratory/Trident/blob/"
             "c37debaccc58b72859f1837f260900a40094848c/"
@@ -120,9 +121,10 @@ def extract_matrix(archive, name, target):
             shutil.copyfileobj(reader, writer, length=1024 * 1024)
 
 
-def download(url, target):
+def download(url, target, timeout=DEFAULT_DOWNLOAD_TIMEOUT):
     request = urllib.request.Request(url, headers={"User-Agent": "SpGEMM-thesis-matrices/1"})
-    with urllib.request.urlopen(request, timeout=25) as response, Path(target).open("wb") as output:
+    # This limits blocking socket operations, not the total transfer duration.
+    with urllib.request.urlopen(request, timeout=timeout or None) as response, Path(target).open("wb") as output:
         if not response.geturl().startswith("https://"):
             raise ValueError("download redirected away from HTTPS")
         shutil.copyfileobj(response, output, length=1024 * 1024)
@@ -153,7 +155,7 @@ def check_catalog_metadata(entry, metadata):
         raise ValueError("downloaded dimensions/{} entries differ from the catalogue".format(kind))
 
 
-def fetch(entry, root):
+def fetch(entry, root, timeout=DEFAULT_DOWNLOAD_TIMEOUT):
     name = entry["id"]
     matrix = root / (name + ".mtx")
     record_path = root / "metadata" / (name + ".source.json")
@@ -176,7 +178,7 @@ def fetch(entry, root):
         for index, url in enumerate(urls):
             print("Downloading:", url, flush=True)
             try:
-                download(url, archive)
+                download(url, archive, timeout=timeout)
                 break
             except OSError as error:
                 if index + 1 == len(urls):
@@ -320,7 +322,11 @@ def main():
     selection.add_argument("--tier", choices=["pilot", "core", "all"],
                            help="all selects the ten main matrices; pilot/core are auxiliary sets")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_DOWNLOAD_TIMEOUT,
+                        help="download socket timeout in seconds (default: 300); 0 disables it, not a total transfer limit")
     args = parser.parse_args()
+    if args.timeout < 0:
+        parser.error("--timeout must be nonnegative; use 0 to disable it")
     catalog = json.loads(args.catalog.read_text(encoding="utf-8"))["matrices"]
     for entry in catalog:
         if not all(re.fullmatch(r"[A-Za-z0-9_-]+", entry[k]) for k in ("id", "group")):
@@ -339,7 +345,7 @@ def main():
             print(("{id:18} {tier:6} {rows:>9} x {cols:<9} nnz={nnz:<10} (" +
                    entry.get("nnz_kind", "expanded") + ") {role}").format(**entry))
         elif args.action == "fetch":
-            fetch(entry, args.root.resolve())
+            fetch(entry, args.root.resolve(), timeout=args.timeout)
         else:
             prepare(entry, args.root.resolve(), args.seed)
 
