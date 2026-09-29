@@ -84,6 +84,11 @@ add_test(NAME trident_correctness_large_messages
             ${MPIEXEC_PREFLAGS} $<TARGET_FILE:trident_correctness> ${MPIEXEC_POSTFLAGS} 2 large)
 set_tests_properties(trident_correctness_large_messages PROPERTIES TIMEOUT 90 PROCESSORS 8)
 
+add_test(NAME trident_hybrid_correctness_delayed_requests
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+            ${MPIEXEC_PREFLAGS} $<TARGET_FILE:trident_hybrid_correctness> ${MPIEXEC_POSTFLAGS} 2 delayed_requests)
+set_tests_properties(trident_hybrid_correctness_delayed_requests PROPERTIES TIMEOUT 90 PROCESSORS 8)
+
 foreach(mode IN ITEMS large skew)
     add_test(NAME trident_hybrid_correctness_${mode}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8

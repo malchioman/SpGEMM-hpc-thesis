@@ -33,6 +33,28 @@ private:
     bool skew_;
 };
 
+class RequestTiming final : public trident::InterNodeExchange {
+public:
+    RequestTiming(trident::InterNodeExchange& inner, const trident::ProcessGrid& grid, bool delay)
+        : inner_(inner), grid_(grid), delay_(delay) {}
+    void begin(const CsrMatrix& a, const CsrMatrix& b) override { inner_.begin(a, b); }
+    void fetch(const CsrMatrix& a, const CsrMatrix& b, const trident::Stage& stage,
+               trident::ProductWorkspace& workspace) override {
+        if (delay_ && grid_.row == 0 && grid_.col == 1 && stage.inner == 0) {
+            // Let node (0,0) finish its own stages before requesting its A slice.
+            // Its finish() must keep progressing incoming RMA while waiting for its worker.
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        inner_.fetch(a, b, stage, workspace);
+    }
+    void finish() override { inner_.finish(); }
+    void close() override { inner_.close(); }
+private:
+    trident::InterNodeExchange& inner_;
+    const trident::ProcessGrid& grid_;
+    bool delay_;
+};
+
 CsrMatrix sparseInput(int rows, int cols, int salt) {
     CsrMatrix result;
     result.rows = rows;
@@ -96,7 +118,8 @@ void checkProduct(const CsrMatrix& a, const CsrMatrix& b, const CsrMatrix& actua
     }
 }
 
-void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& grid, bool skew = false) {
+void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& grid,
+             bool skew = false, bool delayRequests = false) {
     auto a = trident::distributeBlocks(&globalA, globalA.rows, globalA.cols, grid);
     auto b = trident::distributeBlocks(&globalB, globalB.rows, globalB.cols, grid);
     const auto plan = trident::preparePlan(a, b, grid);
@@ -114,13 +137,14 @@ void runCase(CsrMatrix globalA, CsrMatrix globalB, const trident::ProcessGrid& g
 #else
     inter = std::make_unique<trident::TwoSidedInterNodeExchange>(grid);
 #endif
+    RequestTiming requestTiming(*inter, grid, delayRequests);
     std::vector<CsrMatrix> products;
     std::vector<CsrMatrix> inputsB;
     const int repetitions = skew ? 24 : 3;
     // Reuse the plan after changing values and indices (all tile sizes stay fixed).
     for (int repeat = 0; repeat < repetitions; ++repeat) {
         if (skew) std::this_thread::sleep_for(std::chrono::milliseconds((grid.rank + repeat) % 4));
-        auto product = trident::multiply(a, b, plan, exchange, workspace, *inter);
+        auto product = trident::multiply(a, b, plan, exchange, workspace, requestTiming);
 #ifdef TRIDENT_HYBRID
         const auto& hybrid = static_cast<const trident::HybridInterNodeExchange&>(*inter);
         const auto expected = static_cast<std::uint64_t>(repeat + 1) * 2 * (grid.side - 1);
@@ -169,6 +193,10 @@ int main(int argc, char** argv) {
         MPI_Comm reversed = MPI_COMM_NULL;
         checkMpi(MPI_Comm_split(MPI_COMM_WORLD, 0, -worldRank, &reversed), "MPI_Comm_split", MPI_COMM_WORLD);
         trident::ProcessGrid grid(reversed, argc > 1 ? std::stoi(argv[1]) : 0);
+        if (argc > 2 && std::string(argv[2]) == "delayed_requests") {
+            if (grid.side != 2) throw std::invalid_argument("delayed_requests requires a 2x2 node grid");
+            runCase(sparseInput(19, 23, 1), sparseInput(23, 13, 2), grid, false, true);
+        }
         if (argc > 2 && std::string(argv[2]) == "skew") {
             runCase(sparseInput(19, 23, 1), sparseInput(23, 13, 2), grid, true);
         }
