@@ -85,11 +85,15 @@ service worker or pipeline and requires only `MPI_THREAD_FUNNELED`. Publication
 and reader-completion barriers are included in product timings. See
 [Trident GET](docs/trident_get.md) for synchronization and buffer-lifetime rules.
 
-`trident_get_pipeline` uses the same GET transport but alternates two A/B buffer
-pairs: it starts the next stage before intra-node aggregation and computation of
-the current one. It remains FUNNELED, without an additional service core. Actual
-overlap depends on MPI progress; see [pipelined GET](docs/trident_get_pipeline.md)
-for scheduling, memory costs and interpretation of phase timings.
+`trident_get_pipeline` studies prefetch using the same `MPI_Get` transport and
+`MPI_Win_flush` completion mechanism as simple GET. It alternates two A/B buffer
+pairs, issuing reads for the next stage before intra-node aggregation and
+computation of the current stage, and deferring their completion until the next
+stage's data are needed. This keeps the transport primitives common while
+changing scheduling and buffering. It remains FUNNELED, without an additional
+service core. Actual overlap and any speedup depend on MPI progress and must be
+measured; see [pipelined GET](docs/trident_get_pipeline.md) for the distinction
+from `MPI_Rget`, memory costs and interpretation of phase timings.
 
 `trident_put` pushes full CSR slices directly into the receivers' workspace with
 `MPI_Put`, without a pipeline or service worker. It remains FUNNELED and uses
@@ -120,9 +124,9 @@ To multiply Matrix Market coordinate matrices, pass `--matrix-a` and `--matrix-b
 Their dimensions must satisfy `A.cols == B.rows`:
 
 ```bash
-mpirun -np 4 ./build/spgemm_two_sided --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
-mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
-mpirun -np 4 ./build/spgemm_one_sided_put --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
+mpirun -np 4 ./build/spgemm_two_sided --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
+mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
+mpirun -np 4 ./build/spgemm_one_sided_put --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
 ```
 
 Passing only `--matrix-a path/to/A.mtx` reuses the loaded A as B and computes
@@ -195,7 +199,7 @@ Add `--no-validate` to any baseline or Trident executable to skip both the seria
 reference product and the result comparison:
 
 ```bash
-mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --no-validate
+mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --no-validate
 ```
 
 In this mode, both the summary and TSV report `validation=SKIPPED` and
@@ -204,83 +208,31 @@ without certifying numerical correctness. Input checks and runtime errors remain
 active. The final result is still gathered on rank 0, and global A and B remain
 there, so this flag removes the serial validation cost but not all root-memory
 limits for large inputs. The distributed algorithm and timed regions are unchanged.
-The baseline scaling scripts keep validation enabled unless their executable
-invocation is amended to include `--no-validate`. Trident scripts expose the
-equivalent setting through `VALIDATE=0`.
+## Experiments and matrix inputs
 
-## Scaling experiments
+The [experiment plan](docs/experiments.md) describes the proposed strong-scaling,
+phase, structure, permutation, and rectangular-product comparisons and their inputs.
+The [script guide](scripts/README.md) documents six experiment/analysis entrypoints,
+one complete-campaign launcher and one build script. Results use one directory per
+experiment and one TSV per implementation, appending observations across repeated
+executions. Phase and structure tables are regenerated from those observations.
 
-Strong scaling keeps the input matrices and threads per rank fixed while varying
-the number of ranks. With one square Matrix Market matrix:
-
-```bash
-RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling.sh matrices/bcsstk18.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_get.sh matrices/bcsstk18.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_put.sh matrices/bcsstk18.mtx
-```
-
-With two compatible Matrix Market matrices:
+Build and prepare the selected inputs, then launch within a suitable allocation:
 
 ```bash
-RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_get.sh matrices/A.mtx matrices/B.mtx
-RANKS="1 2 4 8" THREADS=8 bash scripts/baselines/run_strong_scaling_one_sided_put.sh matrices/A.mtx matrices/B.mtx
+bash scripts/build.sh --jobs 8
+python3 scripts/matrices.py fetch --ids cage8
+python3 scripts/matrices.py prepare --ids cage8 --seed 42
+python3 scripts/matrices.py fetch --tier all
+python3 scripts/matrices.py prepare --tier all --seed 42
+bash scripts/run_all.sh --dry-run
+# After adapting scripts/experiments.json to the available cluster resources:
+bash scripts/run_all.sh
 ```
 
-Weak scaling uses synthetic matrices and increases global dimensions in
-proportion to the number of ranks:
-
-```bash
-RANKS="1 2 4 8" THREADS=8 ROWS_PER_RANK=4096 COLS_PER_RANK=4096 \
-  B_COLS_PER_RANK=4096 NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/baselines/run_weak_scaling.sh
-RANKS="1 2 4 8" THREADS=8 ROWS_PER_RANK=4096 COLS_PER_RANK=4096 \
-  B_COLS_PER_RANK=4096 NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/baselines/run_weak_scaling_one_sided_get.sh
-RANKS="1 2 4 8" THREADS=8 ROWS_PER_RANK=4096 COLS_PER_RANK=4096 \
-  B_COLS_PER_RANK=4096 NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/baselines/run_weak_scaling_one_sided_put.sh
-```
-
-The scaling scripts set the `experiment` field automatically. Unless `RESULTS`
-is overridden, the two-sided scripts write to `results/two_sided/benchmarks_v2.tsv`,
-the get wrappers write to `results/one_sided_get/benchmarks_v2.tsv`, and the put
-wrappers write to `results/one_sided_put/benchmarks_v2.tsv`.
-
-### Trident scripts
-
-The existing scripts now live in `scripts/baselines/`. Dedicated Trident scripts
-live in `scripts/trident/`, with shared launch settings in `common.sh`. They use
-Open MPI and vary square physical-node counts while keeping ranks per node and
-OpenMP threads explicit:
-
-```bash
-NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-bash scripts/trident/run_local_check.sh
-VARIANT=hybrid bash scripts/trident/run_local_check.sh
-VARIANT=get bash scripts/trident/run_local_check.sh
-VARIANT=get_pipeline bash scripts/trident/run_local_check.sh
-VARIANT=put bash scripts/trident/run_local_check.sh
-VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-VARIANT=hybrid NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-Physical experiments require a suitable allocation or `HOSTFILE`; the local
-check uses logical nodes on localhost and is not a scaling measurement.
-Set `DRY_RUN=1` to preview commands. Validation is enabled by default.
-Generic Trident scripts accept `VARIANT=two_sided`, `VARIANT=hybrid`, `VARIANT=get`,
-`VARIANT=get_pipeline` or `VARIANT=put`. All five variants use the same scripts directly,
-without variant-specific wrappers.
-Physical hybrid launches reserve one additional CPU core per rank for service;
-`THREADS` still specifies compute threads. Both GET variants, PUT and two-sided use `THREADS` cores
-per rank. Scripts do not allocate resources.
-See [experiment scripts](scripts/README.md) for all settings, separate result
-paths, and the weak-scaling input model.
+Downloaded matrices and synthetic R inputs are stored directly in `bin/matrices/`;
+permuted inputs are in `bin/matrices/permuted/`, and source records and experiment
+manifests are in `bin/matrices/metadata/`.
 
 The implementations' technical and scientific sources are listed in
 [`docs/sources.md`](docs/sources.md), with BibTeX citations in

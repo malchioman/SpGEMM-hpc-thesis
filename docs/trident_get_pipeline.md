@@ -1,10 +1,13 @@
 # Trident CPU: pipelined inter-node GET
 
 `trident_get_pipeline` retains Trident's 2D+1D partition, static-Cannon order,
-C-stationary CPU/OpenMP kernel and two-sided intra-node B aggregation. It changes
-the inter-node GET schedule: retrieve stage r+1 while consuming stage r, using
-two alternating pairs of A/B buffers. There is no application service thread,
-work stealing, intra-node RMA or pipeline across different products.
+C-stationary CPU/OpenMP kernel and two-sided intra-node B aggregation. It issues
+`MPI_Get` reads for stage r+1 before consuming stage r, using two alternating
+pairs of A/B buffers, and defers `MPI_Win_flush` until the incoming data are
+needed. The objective is to measure the benefit and memory cost of prefetch
+relative to simple GET while keeping the transport primitives common. There is
+no application service thread, work stealing, intra-node RMA or pipeline across
+different products.
 
 ## Sources and shared code
 
@@ -27,6 +30,31 @@ The existing product driver still calls `begin/fetch/finish`. Lookahead stays
 inside `get_pipeline/inter_node_exchange.*`; distribution, plan generation,
 intra-node communication, accumulation and benchmark output remain shared.
 `get_pipeline/main_get_pipeline.cpp` selects this backend and its metadata.
+
+## Prefetch and completion
+
+Simple GET issues and completes the current stage's reads before intra-node
+aggregation and computation. Pipelined GET completes the current reads, issues
+the next stage's reads into the other buffer pair, and proceeds with the current
+stage's aggregation and computation before completing the prefetched reads.
+Partitioning, stage order, local kernel, input windows and product-boundary
+synchronization remain common. The comparison therefore studies the effect of
+prefetch scheduling and double buffering with the same RMA transport.
+
+Return from `MPI_Get` does not certify that the destination buffer is ready to
+read. The current implementation establishes completion with `MPI_Win_flush`,
+which completes all outstanding RMA operations issued by the calling process
+to the specified target on that window, at both origin and target. The buffer
+is consumed only after this completion, as detailed below.
+
+An alternative is `MPI_Rget`, which returns an `MPI_Request` for each operation.
+Waiting on that request, or successfully testing it for completion, establishes
+that the fetched data are available in the origin buffer. Both approaches can
+support prefetch with double buffering; they differ in completion granularity
+and may have different costs. This implementation uses `MPI_Get` with deferred
+flushes. See MPI 4.1's
+[request-based RMA operations](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node325.htm)
+and [flush semantics](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node331.htm).
 
 ## Schedule and lifetime
 
@@ -65,16 +93,17 @@ four logical or physical nodes are needed to exercise remote lookahead.
 
 ## Progress and measurements
 
-This version uses the same `MPI_Get` and `MPI_Win_flush` primitives as simple
-GET, not `MPI_Rget`; the controlled change is their scheduling and double
-buffering. It requests `MPI_THREAD_FUNNELED`, with MPI calls only on the main
+This version requests `MPI_THREAD_FUNNELED`, with MPI calls only on the main
 thread, and uses the same CPU-core budget as simple GET. No progress worker or
 MPI-specific asynchronous-progress setting is enabled automatically.
 
 Posting a GET before computation permits overlap but does not establish that
 transfers actually progress during OpenMP computation on a particular MPI/network
 stack. The intervening intra-node MPI calls may also contribute to progress.
-Actual overlap and any performance benefit require measurement on the cluster.
+Replacing these calls with `MPI_Rget` would not by itself guarantee background
+progress during computation either. Actual overlap and any performance benefit
+require measurement on the cluster; see MPI 4.1's
+[RMA progress discussion](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node340.htm).
 
 The TSV schema is unchanged, with `implementation=trident_get_pipeline`,
 `benchmark_protocol=trident_get_pipeline_csr_v1`,
@@ -93,21 +122,10 @@ gather and integer-count limits remain unchanged.
 
 ## Running and tests
 
-The CMake build produces `build/trident_get_pipeline`. Use the existing scripts:
-
-```bash
-VARIANT=get_pipeline bash scripts/trident/run_local_check.sh
-
-VARIANT=get_pipeline NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-
-VARIANT=get_pipeline NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-No new wrapper scripts are added. Default physical results are under
-`results/trident/trident_get_pipeline/`; local checks use
-`results/tmp/trident_get_pipeline_local_check_v1.tsv`.
+The CMake build produces `build/trident_get_pipeline`. Use the direct-launch
+examples in [Trident CPU](trident.md#running), selecting that executable.
+The [experiment plan](experiments.md) describes the comparisons; the
+[script guide](../scripts/README.md) covers the shared campaign commands and TSVs.
 
 The shared dense oracle covers rectangular, signed, uneven, empty and zero-sized
 inputs, cancellation, repeated changed payloads, delayed ranks and large messages.
