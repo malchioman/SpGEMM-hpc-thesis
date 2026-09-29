@@ -145,6 +145,12 @@ python3 scripts/matrices.py fetch --ids mouse_gene
 python3 scripts/matrices.py prepare --ids mouse_gene --seed 42
 ```
 
+The downloader's network timeout defaults to 300 seconds per blocking socket
+operation, not per complete download. `fetch --timeout 0` disables this timeout;
+a finite value lets an unresponsive source fail so the next configured mirror
+can be tried. It does not change the scheduler's job walltime or make an invalid
+URL available.
+
 Original matrices and synthetic R inputs live directly in `bin/matrices/`, following
 the input directory of the [earlier PARCO project](https://github.com/malchioman/PARCO-Computing-2026-244944#repository-layout).
 Permuted matrices are grouped in `bin/matrices/permuted/`.
@@ -203,17 +209,30 @@ allocation details and repetitions remain to be finalized on the target system.
 
 ## Agreed result organization
 
-Use one directory per experiment or analysis under `results/`:
+Reserve `results/` for thesis measurements and their analysis exports.
+Functional checks and diagnostics belong in the separate, Git-ignored
+`test-results/` directory:
 
 ```text
 results/
-  pilot/
   strong_scaling/
   phase_analysis/
   matrix_structure/
   permutation/
   rectangular/
+
+test-results/
+  pilot/
+  local-check/
+  tmp/
 ```
+
+The standard pilot is routed to `test-results/pilot/`, including when invoked by
+`run_all.sh`. A whole physical-cluster rehearsal must use an explicit
+`--results-dir test-results/<check-name>` for all of its stages. Local logical
+checks use `test-results/local-check/` by default. Existing check files are
+retained until deliberately moved or removed; they are not promoted to thesis
+measurements just because validation passed.
 
 Each directory contains one TSV per implementation: `spgemm_two_sided.tsv`,
 `spgemm_one_sided_get.tsv`, `spgemm_one_sided_put.tsv`, `trident_two_sided.tsv`,

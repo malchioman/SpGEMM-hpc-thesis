@@ -51,6 +51,19 @@ def repo_path(value):
     return (path if path.is_absolute() else REPO / path).resolve()
 
 
+def check_root(results_dir):
+    """Keep checks outside the repository's thesis-result tree."""
+    try:
+        relative = results_dir.relative_to(REPO / "results")
+    except ValueError:
+        return results_dir
+    return REPO / "test-results" / relative
+
+
+def output_root(cfg, action):
+    return check_root(cfg.results_dir) if action == "pilot" else cfg.results_dir
+
+
 def read_json(path):
     with path.open(encoding="utf-8") as stream:
         return json.load(stream)
@@ -72,7 +85,7 @@ def options(argv=None):
     group.add_argument("--validate", dest="validate", action="store_true", default=None)
     group.add_argument("--no-validate", dest="validate", action="store_false")
     parser.add_argument("--dry-run", action="store_true", help="preview without requiring inputs/binaries or writing files")
-    parser.add_argument("--local-check", action="store_true", help="logical nodes on localhost; validation on, results/tmp/local-check")
+    parser.add_argument("--local-check", action="store_true", help="logical nodes on localhost; validation on, test-results/local-check by default")
     args = parser.parse_args(argv)
     defaults = read_json(REPO / "scripts/experiments.json")
     config = read_json(args.config)
@@ -122,14 +135,14 @@ def options(argv=None):
                  "--use-hwthread-cpus", "--app", "-app", ":"}
     if any(token.split("=", 1)[0] in forbidden for token in cfg.mpi_args):
         raise ValueError("mpi_args cannot override ranks, hosts, mapping or binding; use the dedicated options")
+    for key in ("build_dir", "matrix_dir", "results_dir"):
+        setattr(cfg, key, repo_path(getattr(cfg, key)))
     if cfg.local_check:
         cfg.validate = True
         if cfg.hostfile:
             raise ValueError("--local-check cannot use a hostfile")
         # Even a custom result root keeps logical tests apart from real measurements.
-        cfg.results_dir = str(Path(cfg.results_dir) / "tmp/local-check")
-    for key in ("build_dir", "matrix_dir", "results_dir"):
-        setattr(cfg, key, repo_path(getattr(cfg, key)))
+        cfg.results_dir = check_root(cfg.results_dir) / "local-check"
     if cfg.hostfile:
         cfg.hostfile = repo_path(cfg.hostfile)
     cfg.catalog = {entry["id"]: entry for entry in read_json(REPO / "scripts/matrices_catalog.json")["matrices"]}
@@ -338,14 +351,14 @@ def run_experiment(cfg, action, action_cases, headers):
         for nodes in cfg.nodes:
             for repeat in range(runs):
                 for variant in cfg.variants:
-                    destination = cfg.results_dir / action / (variant + ".tsv")
+                    destination = output_root(cfg, action) / action / (variant + ".tsv")
                     print("%s: %s / %s, nodes=%d, %s, execution %d/%d" % (
                         action, case[2].name, case[3].name, nodes, variant, repeat + 1, runs), flush=True)
                     if cfg.dry_run:
                         cmd = command(cfg, action, case, variant, nodes, Path("<temporary-result.tsv>"))
                         print("  " + shlex.join(cmd) + "\n  -> " + str(destination))
                         continue
-                    temporary_root = cfg.results_dir / "tmp"
+                    temporary_root = check_root(cfg.results_dir) / "tmp"
                     temporary_root.mkdir(parents=True, exist_ok=True)
                     scratch = Path(tempfile.mkdtemp(prefix=variant + "-", dir=temporary_root))
                     raw_path, log_path = scratch / "raw.tsv", scratch / "launch.log"
@@ -395,7 +408,10 @@ def main(argv=None):
     work = [(action, cases(cfg, action)) for action in actions if action in RUN_ACTIONS]
     count = sum(len(items) * len(cfg.nodes) * len(cfg.variants) * sampling(cfg, action)[0]
                 for action, items in work)
-    print("%d MPI launches; results: %s" % (count, cfg.results_dir), flush=True)
+    display_root = output_root(cfg, cfg.action) if cfg.action != "all" else cfg.results_dir
+    print("%d MPI launches; results: %s" % (count, display_root), flush=True)
+    if "pilot" in actions and len(actions) > 1:
+        print("Pilot checks: %s" % (output_root(cfg, "pilot") / "pilot"), flush=True)
     if cfg.local_check:
         print("LOCAL CHECK: logical nodes, no rank binding; excluded from cluster performance results.", flush=True)
     if cfg.dry_run:
@@ -420,11 +436,14 @@ def main(argv=None):
         headers = input_preflight(cfg, work)
     else:
         headers = {}
-    with result_lock(cfg.results_dir):
+    with contextlib.ExitStack() as locks:
+        # A complete campaign can write thesis tables and pilot checks to different roots.
+        for root in sorted({output_root(cfg, action) for action in actions}):
+            locks.enter_context(result_lock(root))
         # Refuse incompatible or partial tables before any expensive MPI launch.
         for action, _ in work:
             for variant in cfg.variants:
-                read_table(cfg.results_dir / action / (variant + ".tsv"), FIELDS)
+                read_table(output_root(cfg, action) / action / (variant + ".tsv"), FIELDS)
         for action in actions:
             if action in RUN_ACTIONS:
                 run_experiment(cfg, action, dict(work)[action], headers)
