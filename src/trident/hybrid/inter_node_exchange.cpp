@@ -6,6 +6,11 @@
 #include <stdexcept>
 
 namespace trident {
+namespace {
+
+constexpr int kServiceDoneTag = 60;
+
+}  // namespace
 
 HybridInterNodeExchange::HybridInterNodeExchange(const ProcessGrid& grid) : grid_(grid) {
     int provided = MPI_THREAD_SINGLE;
@@ -45,6 +50,8 @@ void HybridInterNodeExchange::begin(const CsrMatrix& a, const CsrMatrix& b) {
         service_ = std::thread([this, &a, &b, generation = generation_] {
             try {
                 serve(a, b, generation);
+                checkMpi(MPI_Send(nullptr, 0, MPI_BYTE, grid_.rank, kServiceDoneTag, payload_),
+                         "MPI_Send(hybrid service done)", grid_.world);
             } catch (const std::exception& error) {
                 fail(error.what(), grid_.world);
             } catch (...) {
@@ -114,7 +121,13 @@ void HybridInterNodeExchange::finish() {
     if (!active_) throw std::logic_error("hybrid finish outside a product");
     // Every remote consumer requests each owned input once per product. Joining drains all
     // responses before input buffers may change; generation slots never need a racy reset.
-    if (service_.joinable()) service_.join();
+    if (service_.joinable()) {
+        // Keep MPI progress active until all remote requests have been served. Self-target
+        // RMA polling in the worker may complete without progressing incoming UCX/TCP traffic.
+        checkMpi(MPI_Recv(nullptr, 0, MPI_BYTE, grid_.rank, kServiceDoneTag, payload_, MPI_STATUS_IGNORE),
+                 "MPI_Recv(hybrid service done)", grid_.world);
+        service_.join();
+    }
     active_ = false;
 }
 

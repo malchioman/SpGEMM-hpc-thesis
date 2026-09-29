@@ -45,8 +45,13 @@ See the normative [MPI 4.1 accumulate operations](https://www.mpi-forum.org/docs
    column indices, and values all travel two-sided, including empty slices.
 5. After the requested inputs arrive, the main thread runs the unchanged
    two-sided intra-node aggregation and local multiplication.
-6. At product completion it joins the service thread, draining all
-   `2*(q-1)` remote responses owned by this rank before inputs can change.
+6. At product completion the main thread receives a zero-byte completion message
+   from its own service thread, then joins it. The receive keeps MPI progress
+   active while draining all `2*(q-1)` remote responses owned by this rank before
+   inputs can change. A plain thread join can stall with software RMA transports:
+   polling self-target request slots alone need not progress incoming remote
+   requests. The completion message uses a separate tag on the payload communicator
+   and introduces no inter-rank barrier.
    Generations distinguish consecutive products without resetting remote slots.
    Window/communicator cleanup is explicit and collective, after all workers
    have stopped; exceptions abort rather than unwind through collective cleanup.
@@ -84,6 +89,20 @@ The service worker needs CPU time in addition to the T compute threads.
 For controlled protocol comparisons, keep the compute-thread count and total CPU
 budget equal across variants, for example by binding every rank to T+1 cores.
 Process binding does not separately pin the worker to an exclusive core.
+
+The `trident_hybrid_correctness_delayed_requests` test delays one consumer until
+an owner can finish its own stages, then checks repeated products against the
+independent dense oracle. To exercise software RMA progress with Open MPI/UCX
+on a single host, run:
+
+```bash
+mpirun -np 8 --oversubscribe --bind-to none \
+  --mca osc ucx --mca opal_common_ucx_tls any --mca opal_common_ucx_devices any \
+  -x UCX_TLS=tcp,self --timeout 30 \
+  ./build/trident_hybrid_correctness 2 delayed_requests
+```
+
+This is a functional test with logical nodes; it is not a cluster performance run.
 
 ## Running
 
