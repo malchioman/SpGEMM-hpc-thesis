@@ -117,11 +117,9 @@ when interpreting comparisons with the paper or later asynchronous variants.
 
 ## Running
 
-Dedicated Open MPI scripts for strong scaling, weak scaling, and a localhost
-correctness check are in `scripts/trident/`. See the
-[script guide](../scripts/README.md) for node placement, environment variables,
-dry runs, and separate result paths. Baseline scripts remain separate under
-`scripts/baselines/`.
+The [experiment plan](experiments.md) describes the comparisons, and the
+[script guide](../scripts/README.md) covers the shared build, experiment and
+analysis commands. Direct executable launches are also available as shown below.
 
 Build using the root CMake project. Example for one physical node:
 
@@ -136,7 +134,7 @@ Example with Open MPI on an allocation of four physical nodes, two ranks per nod
 
 ```bash
 mpirun -np 8 --map-by ppr:2:node:PE=4 --bind-to core ./build/trident_two_sided \
-  --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 4 \
+  --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 4 \
   --no-validate --results results/trident/cluster_two_sided.tsv
 ```
 

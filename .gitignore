@@ -6,6 +6,9 @@ CMakeCache.txt
 CMakeFiles/
 compile_commands.json
 results/tmp/
+results/campaigns/
+bin/matrices/
+__pycache__/
 *.o
 *.obj
 *.exe

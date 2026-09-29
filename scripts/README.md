@@ -1,227 +1,195 @@
-# Experiment scripts
+# Build, inputs and experiments
 
-These Bash scripts target Linux with Open MPI (`mpirun`). Build the executables
-with the root CMake project before running experiments. Examples below start in
-the repository root.
+Run the shell scripts on Linux/WSL with Python 3.8+, CMake 3.21+, a C++17 compiler,
+OpenMP and **Open MPI**. The matrix and analysis tools need only Python's standard
+library. Benchmark timing code is unchanged.
 
-```text
-scripts/
-  baselines/
-    run_strong_scaling.sh
-    run_weak_scaling.sh
-    run_strong_scaling_one_sided_get.sh
-    run_weak_scaling_one_sided_get.sh
-    run_strong_scaling_one_sided_put.sh
-    run_weak_scaling_one_sided_put.sh
-  trident/
-    common.sh
-    run_strong_scaling.sh
-    run_weak_scaling.sh
-    run_local_check.sh
-```
+## Eight entrypoints
 
-## Baselines
-
-The six existing scripts have moved into `baselines/`; their benchmark behavior,
-environment variables, executable names, and result paths are unchanged. The
-old `scripts/run_*.sh` paths no longer exist. Run these scripts from the repository
-root, or override `BINARY` and `RESULTS` explicitly.
-
-```bash
-RANKS="1 2 4 8" THREADS=4 \
-  bash scripts/baselines/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-RANKS="1 2 4 8" THREADS=4 \
-  bash scripts/baselines/run_weak_scaling_one_sided_get.sh
-```
-
-The `RANKS` list controls total MPI ranks; these baseline scripts do not enforce
-Trident's hierarchical placement. They retain validation and do not implement
-the Trident-specific `VALIDATE` or `DRY_RUN` switches described below.
-
-## Trident: physical-node experiments
-
-`NODES` contains physical node counts, each a perfect square: `1 4 9 16 ...`.
-`RANKS_PER_NODE` is fixed across the sweep, as is `THREADS` per rank. Each launch
-uses `NODES * RANKS_PER_NODE` MPI ranks. The scripts explicitly map ranks with
-`--map-by ppr:<ranks-per-node>:node:PE=<cpus-per-rank> --bind-to core --nooversubscribe`.
-Two-sided, both GET variants and PUT use `cpus-per-rank=THREADS`; hybrid uses `THREADS+1` for its service
-worker. The process is bound to the resulting CPU set, without separate pinning
-of the worker. `THREADS` always means compute threads.
-This follows the mapping and binding options in the
-[Open MPI mpirun manual](https://docs.open-mpi.org/en/v5.0.x/man-openmpi/man1/mpirun.1.html).
-
-Start inside a cluster allocation large enough for the largest requested node
-count, or supply `HOSTFILE` with available hosts and their slots. Each node needs
-at least `RANKS_PER_NODE * cpus-per-rank` allocated CPU cores, with enough MPI slots
-for its ranks. The scripts do not allocate cluster resources or configure SSH.
-The MPI installation, executable, and input paths must be accessible on all
-participating nodes. Physical runs never use `--logical-node-size`.
-
-Choose `VARIANT=two_sided` (the default), `VARIANT=hybrid`, `VARIANT=get`,
-`VARIANT=get_pipeline` or `VARIANT=put`.
-All variants use the same three scripts; the former hybrid-specific wrappers
-have been removed. Hybrid requires an MPI installation supporting
-`MPI_THREAD_MULTIPLE`; both GET variants, PUT and two-sided require only `MPI_THREAD_FUNNELED`.
-One invocation runs one selected variant, not all variants automatically.
-
-```bash
-VARIANT=hybrid NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-VARIANT=hybrid NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-At equal `THREADS`, hybrid requests more cores than two-sided. For equal total
-cores per rank, use one fewer compute thread for hybrid and report that choice.
-See [hybrid measurements](../docs/trident_hybrid.md#measurements-and-limits).
-GET and two-sided use the same core count at equal `THREADS`. GET includes its
-product-boundary synchronization in timed regions; see
-[GET measurements](../docs/trident_get.md#measurements-and-limits).
-Pipelined GET uses the same core budget and product-boundary synchronization,
-but adds one A/B buffer pair and one-stage lookahead. Replace `VARIANT=get` with
-`VARIANT=get_pipeline` in the examples below. Its backend phase time is not the
-full duration of network activity; compare end-to-end product time and consult
-[pipeline measurements](../docs/trident_get_pipeline.md#progress-and-measurements).
-Staged PUT also uses `THREADS` cores per rank, without a pipeline, but includes
-two barriers per stage in product timings. Use `VARIANT=put` in the same scripts;
-see [PUT measurements](../docs/trident_put.md#measurements-and-running).
-
-```bash
-VARIANT=get NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-VARIANT=get NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-### Strong scaling
-
-The matrices remain fixed while the number of nodes increases. One matrix
-computes `A * A` and must be square; two matrices compute `A * B` and must satisfy
-`A.cols == B.rows`.
-
-```bash
-NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-
-NODES="1 4" RANKS_PER_NODE=2 THREADS=4 HOSTFILE=hosts.txt VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx
-```
-
-### Weak scaling
-
-The synthetic input family matches the baseline scripts. For total rank count
-`P`, `A` has shape `(ROWS_PER_RANK * P, COLS_PER_RANK * P)` and `B` has shape
-`(COLS_PER_RANK * P, B_COLS_PER_RANK * P)`. The nonzeros per input row stay fixed.
-This keeps the average number of scalar products per rank constant, not
-necessarily each rank's workload, communication volume, or replicated memory.
-The 2D partitioning and matrix sparsity can still cause imbalance.
-
-```bash
-NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  ROWS_PER_RANK=4096 COLS_PER_RANK=4096 B_COLS_PER_RANK=4096 \
-  NNZ_PER_ROW=16 B_NNZ_PER_ROW=16 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-The whole sweep is checked before the first launch for invalid dimensions,
-nonzero counts, and known signed-int limits of the synthetic input generator.
-These checks do not guarantee that the inputs or result fit in memory.
-
-## Local correctness check
-
-```bash
-bash scripts/trident/run_local_check.sh
-VARIANT=hybrid bash scripts/trident/run_local_check.sh
-VARIANT=get bash scripts/trident/run_local_check.sh
-VARIANT=get_pipeline bash scripts/trident/run_local_check.sh
-VARIANT=put bash scripts/trident/run_local_check.sh
-```
-
-This runs small rectangular synthetic products on localhost, by default with
-one and four **logical** nodes and two ranks per logical node. It passes
-`--logical-node-size`, permits oversubscription, disables CPU binding, and
-requires validation (`VALIDATE=0` is rejected). It does not use a hostfile.
-The executable records `topology=logical_test`. This is a functional check, not
-a measurement of inter-node network performance or scaling.
-
-## Trident configuration
-
-Set environment variables before the script invocation:
-
-| Variable | Default | Meaning |
+| Script | Purpose | Inputs / outputs |
 | --- | --- | --- |
-| `VARIANT` | `two_sided` | Backend: `two_sided`, `hybrid`, `get`, `get_pipeline` or `put` |
-| `BINARY` | `<repo>/build/trident_<VARIANT>` | Override executable path; must match the selected backend |
-| `MPI_LAUNCHER` | `mpirun` | Open MPI launcher executable, not a command containing extra flags |
-| `NODES` | `1 4` | Space-separated square node counts; logical nodes only in the local check |
-| `RANKS_PER_NODE` | `2` | MPI ranks per physical or logical node |
-| `THREADS` | `1` | OpenMP threads per rank |
-| `HOSTFILE` | unset | Optional Open MPI hostfile for physical runs |
-| `SCHEDULE`, `CHUNK` | `guided`, `64` | OpenMP schedule and chunk |
-| `WARMUP`, `REPEATS`, `TRIALS` | `2`, `10`, `5` | Benchmark sampling; local check defaults to `0`, `1`, `1` |
-| `VALIDATE` | `1` | Set to `0` to pass `--no-validate` in physical experiments |
-| `DRY_RUN` | `0` | Set to `1` to print commands without launching MPI or writing results |
-| `RESULTS` | see below | Destination TSV, appended by the executable |
-| `ROWS_PER_RANK`, `COLS_PER_RANK`, `B_COLS_PER_RANK` | `4096` each | Weak-scaling dimension factors |
-| `NNZ_PER_ROW`, `B_NNZ_PER_ROW` | `16` each | Weak-scaling nonzeros per input row |
+| `run_pilot.sh` | Correctness check of all eight implementations on square, permuted and rectangular products | `cage8`; `results/pilot/` |
+| `run_strong_scaling.sh` | Fixed `A*A` over selected node counts | All ten main matrices; `results/strong_scaling/` |
+| `analyze_phases.sh` | Export recorded phase timings, without new MPI runs | Strong scaling, permutation and rectangular observations; `results/phase_analysis/` |
+| `analyze_structure.sh` | Export original-square measurements with input/output densities and average input nnz per row | Strong scaling observations; `results/matrix_structure/` |
+| `run_permutation.sh` | Run `(P*A*P^T)^2`, seed 42 | `HV15R`, `dielFilterV3real`, `cage15`, `archaea`; `results/permutation/` |
+| `run_rectangular.sh` | Run `A*R` with the prepared deterministic sparse R | All ten main matrices; `results/rectangular/` |
+| `run_all.sh` | Execute the six stages: pilot, strong scaling, permutation, rectangular, then both exports | Same files as individual scripts |
+| `build.sh` | Configure and compile the CMake project in Release mode | Executables in `build/` by default |
 
-Default binary and result paths are anchored to the repository, regardless of
-the current directory. User-supplied relative paths are relative to the calling
-directory. All arguments are passed as Bash arrays, including paths with spaces.
-The printed command is shell-escaped. A failed launch stops the sweep and
-propagates its exit status; earlier successful TSV rows remain available.
-If `VARIANT` is omitted and the basename of `BINARY` is `trident_hybrid`,
-`trident_get`, `trident_get_pipeline` or `trident_put`, the corresponding variant is inferred.
-An explicit variant conflicting with a known executable name is rejected. For
-renamed/custom executables, specify `VARIANT` so CPU binding remains correct.
+The wrappers share `lib/experiments.py` and [experiments.json](experiments.json), so
+launch settings, checks and TSV handling are identical in individual and complete
+campaigns. Scientific choices and limitations are in the
+[experiment plan](../docs/experiments.md).
 
-Preview the physical mapping without a built executable or an allocation:
+## Prepare and run
+
+From the repository root:
 
 ```bash
-DRY_RUN=1 NODES="1 4 9" RANKS_PER_NODE=2 THREADS=4 \
-  bash scripts/trident/run_strong_scaling.sh tests/data/tiny_symmetric.mtx
+bash scripts/build.sh --jobs 8
+python3 scripts/matrices.py fetch --ids cage8
+python3 scripts/matrices.py prepare --ids cage8 --seed 42
+python3 scripts/matrices.py fetch --tier all
+python3 scripts/matrices.py prepare --tier all --seed 42
+
+# Preview without launching MPI or requiring downloaded inputs/binaries:
+bash scripts/run_all.sh --dry-run
+
+# Inside an appropriate cluster allocation, after setting experiments.json:
+bash scripts/run_all.sh
 ```
 
-A dry run still checks numeric options and supplied input/hostfile paths; it
-does not check MPI availability, allocation capacity, or Matrix Market contents.
+`run_all.sh` does not download inputs, build executables or request a scheduler
+allocation. It checks inputs for all selected stages before starting. Load the
+target's compiler/MPI modules and obtain the allocation beforehand. CRESCO-8's
+modules, queue and available resources still need to be confirmed; the checked-in
+resource values are editable examples, not a verified cluster configuration.
 
-By default, results are kept separate by executable and experiment:
-
-- `results/trident/<binary-name>/strong_scaling_v1.tsv`
-- `results/trident/<binary-name>/weak_scaling_v1.tsv`
-- `results/tmp/<binary-name>_local_check_v1.tsv` (local checks, ignored by Git)
-
-The experiment labels are `trident_strong_scaling`, `trident_weak_scaling`, and
-`trident_local_check`. The executable also records detected topology and its
-benchmark protocol. Do not combine Trident TSV rows with the baselines' different
-schema/protocol. Keep future variants with different protocols in separate files.
-Hybrid defaults therefore write under `results/trident/trident_hybrid/`, with
-local checks under `results/tmp/trident_hybrid_local_check_v1.tsv`. Two-sided
-result paths and protocol are unchanged.
-GET defaults write under `results/trident/trident_get/`, with local checks under
-`results/tmp/trident_get_local_check_v1.tsv` and protocol `trident_get_csr_v1`.
-Pipelined GET uses `results/trident/trident_get_pipeline/`,
-`results/tmp/trident_get_pipeline_local_check_v1.tsv` and protocol
-`trident_get_pipeline_csr_v1`.
-PUT uses `results/trident/trident_put/`, `results/tmp/trident_put_local_check_v1.tsv`
-and protocol `trident_put_staged_csr_v1`.
-
-Validation is enabled unless explicitly disabled for physical experiments.
-`VALIDATE=0` skips the serial reference and comparison, but the current executable
-still keeps global inputs on rank 0 and gathers the final result. It does not
-remove all memory limits for large matrices. See
-[Trident CPU](../docs/trident.md) for timing definitions and algorithmic limits.
-
-## Script tests
-
-On Linux, CTest registers `scaling_scripts_smoke` when Bash is available. It uses
-a mock launcher to check argument boundaries, placement, sweep validation,
-failure propagation, local-test isolation, and the relocated baseline wrappers.
-Run it directly with Bash 4.4 or later:
+Build output stays in the chosen CMake directory, separate from matrix files:
 
 ```bash
-bash tests/scaling_scripts_smoke.sh
+bash scripts/build.sh --build-dir build-wsl --jobs 4
+bash scripts/run_pilot.sh --build-dir build-wsl --nodes 1
+
+# Optional compiler override, passed to CMake after --:
+bash scripts/build.sh -- -DCMAKE_CXX_COMPILER=mpicxx
 ```
 
-This does not replace the real MPI local check or physical-node tests on the
-university cluster.
+Use a single-configuration generator (Unix Makefiles or Ninja). `--build-dir` must
+match between build and run commands. Relative build, matrix, result and hostfile
+paths are resolved against the repository, even when invoking a script elsewhere.
+The `--config` filename is relative to the current working directory. Set `PYTHON`
+to choose the interpreter used by the shell wrappers.
+
+## Shared settings
+
+Edit `experiments.json`, or override individual values on the command line:
+
+```bash
+bash scripts/run_strong_scaling.sh --nodes 1 4 9 --ranks-per-node 2 --threads 4
+bash scripts/run_rectangular.sh --matrices cage12 --runs 3
+bash scripts/run_permutation.sh --permutation-matrices HV15R cage15 --seed 42
+bash scripts/run_all.sh --config scripts/experiments.json --hostfile hosts.txt
+bash scripts/run_all.sh --help
+```
+
+| Setting | Checked-in value | Meaning |
+| --- | --- | --- |
+| `nodes` | `[1, 4]` | Physical-node counts; must be perfect squares for Trident |
+| `ranks_per_node` | `2` | Fixed MPI processes on each node |
+| `threads` | `4` | OpenMP compute threads per rank |
+| `cpus_per_rank` | `null` | Defaults to `threads + 1` for **all** variants, including room for Hybrid's worker |
+| `runs` | `3` | Independent MPI launches per input pair, resource configuration and implementation |
+| `warmup`, `repeats`, `trials` | `2`, `10`, `5` | Within each launch: warmup and product sampling; not independent process launches |
+| `schedule`, `chunk` | `guided`, `64` | Same OpenMP settings across variants |
+| `validate` | `false` | Main campaigns skip the serial reference; use `--validate` to enable it |
+| `seed` | `42` | Must match prepared permutation manifests |
+| `matrices` | `["all"]` | Ten main inputs, or an explicit list of catalogue names |
+| `pilot_matrices` | `["cage8"]` | Small correctness inputs; override with `--pilot-matrices` |
+| `permutation_matrices` | Four selected names | Only permuted products; original references come from strong scaling |
+| `variants` | All eight | Subset accepted via `--variants trident_get trident_get_pipeline`, for example |
+| `timeout` | `0` | Per-launch limit in seconds; zero uses no additional timeout |
+
+The pilot always validates, uses one independent launch per case/configuration,
+zero warmups, one repeat and one trial. It is excluded from both analysis exports.
+`--matrices cage8` also selects cage8 for permutation unless an explicit
+`--permutation-matrices` is supplied. The pilot selection remains separate.
+
+Open MPI receives `--map-by ppr:R:node:PE=C --bind-to core --nooversubscribe`, with
+R ranks per node and C reserved cores per rank. All variants get the same CPU
+budget; the worker is not separately pinned to a dedicated core. The environment
+sets `OMP_NUM_THREADS`, `OMP_DYNAMIC=FALSE`, `OMP_PLACES=cores` and
+`OMP_PROC_BIND=close`. Request enough physical cores per node for `R*C`.
+`--mpi-launcher` selects the Open MPI `mpirun` executable, not a generic `srun`/MPICH
+adapter. `mpi_args` in JSON (or repeated `--mpi-arg=TOKEN` on the CLI) can supply
+MPI transport options; CLI tokens replace the configured list. Mapping and binding
+overrides are rejected. Trident's reported physical topology is checked against
+the requested configuration before accepting a result.
+
+### Local functional check
+
+Logical nodes allow testing the hierarchical paths on a workstation:
+
+```bash
+bash scripts/run_pilot.sh --build-dir build-wsl --local-check --nodes 1 4 --threads 2
+
+# Small check of the complete collection/export workflow:
+bash scripts/run_all.sh --build-dir build-wsl --local-check --nodes 1 \
+  --matrices cage8 --threads 2 --runs 1 --warmup 0 --repeats 1 --trials 1
+```
+
+This mode enables validation, runs on localhost with oversubscription and no rank
+binding, and passes `--logical-node-size` to Trident. Results always go under
+`<results-dir>/tmp/local-check/`, including when a custom result root is supplied.
+They record `topology=logical_test` and `cpus_per_rank=NA`; these are functional
+checks, not physical strong-scaling measurements. Pass `--local-check` to the
+analysis scripts too when exporting these temporary observations.
+
+## Result files and repetition
+
+Every experiment directory contains one TSV per selected executable, for example
+`results/strong_scaling/trident_get.tsv`. Actual runs append one row per completed
+MPI launch, without timestamps, execution IDs or averages. Inputs (`matrix_a`,
+`matrix_b`) use paths relative to the matrix directory; permuted names retain the
+seed. Rows also record dimensions, actual CSR nnz, resources, sampling settings,
+protocol, validation and all existing timing measures.
+
+The collector normalizes the two existing benchmark schemas without changing C++
+instrumentation. Baseline `halo_setup_seconds` and Trident `plan_setup_seconds`
+remain separate. Unsupported fields are `NA`, including inter/intra-node timings
+for the row-distributed baselines. Trident `compute_gflops` is exported as
+`compute_gflops_p90`, matching its use of compute P90. First-product time includes
+setup; independently computed phase P90s must not be summed or stacked.
+
+Re-running an experiment appends new observations to the same file. Re-running an
+analysis **regenerates** its selected implementation files from all accumulated
+source observations, preserving identical repetitions without duplicating them.
+Analysis scripts export tables; they do not calculate means, speedups or plots.
+`analyze_structure.sh` uses actual benchmark nnz (after symmetry expansion and
+duplicate handling), not the catalogue's stored-entry counts. Densities and mean
+row degree describe only part of matrix structure; cross-matrix interpretation
+also uses the application families in the experiment plan.
+
+Permutation files contain the permuted runs only: compare them with the matching
+original rows in `strong_scaling/`. Phase exports combine strong, permutation and
+rectangular inputs, identifiable by their two filenames. Exports use every source
+row for the selected variants, regardless of `--nodes` or `--matrices`; those flags
+select **new runs**, not filters that discard previously collected observations.
+
+Input hashes are verified once per input per command, outside the measured region.
+An incompatible existing TSV header, incomplete row, bad exit status, unexpected
+protocol/topology or failed validation stops the campaign. A failed launch is not
+appended; diagnostics remain under `<results-dir>/tmp/`. Successful raw intermediate
+files are removed after their observation is appended. Completed observations
+survive a later failure. A result-directory lock prevents concurrent campaign/export
+writers. After a forcibly killed process, remove `.experiments.lock` only after
+confirming that no process still uses it. There is no automatic resume/deduplication:
+a retry adds new repetitions for the selections it runs.
+
+## Matrix tools
+
+```bash
+python3 scripts/matrices.py list --tier all
+python3 scripts/matrices.py fetch --tier all
+python3 scripts/matrices.py prepare --tier all --seed 42
+```
+
+`all` selects the ten main matrices; `--ids cage8` selects the separate pilot.
+Original matrices and synthetic R inputs live in `bin/matrices/`, permutations in
+`bin/matrices/permuted/`, and metadata in `bin/matrices/metadata/`. Verified files
+are reused. `--root /shared/path/matrices` changes the download/preparation root;
+use the corresponding `--matrix-dir /shared/path/matrices` in experiment scripts.
+No network access is needed during experiments.
+
+## Checks
+
+```bash
+python3 tests/matrix_tools_test.py
+python3 tests/experiment_scripts_test.py
+ctest --test-dir build -R '^(matrix_tools|experiment_scripts)$' --output-on-failure
+```
+
+The offline campaign tests exercise all eight output contracts, repeated appends,
+idempotent exports, local-result isolation, configuration, input/schema checks and
+failed launch handling. Numerical MPI checks are separate from these fixture tests.

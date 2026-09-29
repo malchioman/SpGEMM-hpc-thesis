@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "checked_on": "2026-09-28",
+  "matrices": [
+    {
+      "id": "cage8",
+      "group": "vanHeukelum",
+      "rows": 1015,
+      "cols": 1015,
+      "nnz": 11003,
+      "tier": "pilot",
+      "paper": false,
+      "role": "Small polymer graph for pipeline and correctness checks; not a cluster scaling workload."
+    },
+    {
+      "id": "cage12",
+      "group": "vanHeukelum",
+      "rows": 130228,
+      "cols": 130228,
+      "nnz": 2032536,
+      "tier": "core",
+      "paper": false,
+      "role": "Manageable member of the cage family; original/permuted structure comparison."
+    },
+    {
+      "id": "web-Google",
+      "group": "SNAP",
+      "rows": 916428,
+      "cols": 916428,
+      "nnz": 5105039,
+      "tier": "core",
+      "paper": false,
+      "role": "Directed web graph with irregular connectivity; complementary to the polymer matrices."
+    },
+    {
+      "id": "mouse_gene",
+      "group": "Belcastro",
+      "rows": 45101,
+      "cols": 45101,
+      "nnz": 28967291,
+      "tier": "all",
+      "paper": true,
+      "role": "Exact paper input: weighted biological graph. Squaring may be much denser than the input."
+    },
+    {
+      "id": "cage15",
+      "group": "vanHeukelum",
+      "rows": 5154859,
+      "cols": 5154859,
+      "nnz": 99199551,
+      "tier": "all",
+      "paper": true,
+      "role": "Exact paper input: large polymer matrix; activate after a memory/runtime pilot."
+    },
+    {
+      "id": "HV15R",
+      "group": "Fluorem",
+      "rows": 2017169,
+      "cols": 2017169,
+      "nnz": 283073458,
+      "tier": "all",
+      "paper": true,
+      "role": "Exact paper input: structured CFD matrix, central to the original/permuted comparison; large input and output risk."
+    },
+    {
+      "id": "dielFilterV3real",
+      "group": "Dziekonski",
+      "rows": 1102824,
+      "cols": 1102824,
+      "nnz": 89306020,
+      "tier": "all",
+      "paper": true,
+      "role": "Paper input: symmetric electromagnetics matrix from a finite-element model."
+    },
+    {
+      "id": "archaea",
+      "group": "HipMCL",
+      "rows": 1644227,
+      "cols": 1644227,
+      "nnz": 204792654,
+      "nnz_kind": "expanded",
+      "tier": "all",
+      "paper": true,
+      "role": "Protein similarity network; general Matrix Market storage.",
+      "source": {
+        "format": "mtx",
+        "urls": [
+          "https://portal.nersc.gov/project/m1982/HipMCL/archaea/arch_vs_arch_30_50length_propermm.mtx"
+        ],
+        "page": "https://portal.nersc.gov/project/m1982/HipMCL/archaea/"
+      }
+    },
+    {
+      "id": "eukarya",
+      "group": "HipMCL",
+      "rows": 3243106,
+      "cols": 3243106,
+      "nnz": 359763936,
+      "nnz_kind": "expanded",
+      "tier": "all",
+      "paper": true,
+      "role": "Protein similarity network; general Matrix Market storage.",
+      "source": {
+        "format": "mtx",
+        "urls": [
+          "https://portal.nersc.gov/project/m1982/HipMCL/eukarya/euk_vs_euk_30_50length_propermm.mtx"
+        ],
+        "page": "https://portal.nersc.gov/project/m1982/HipMCL/eukarya/"
+      }
+    },
+    {
+      "id": "isolates_subgraph4",
+      "group": "HipMCL",
+      "rows": 4372771,
+      "cols": 4372771,
+      "nnz": 264799194,
+      "nnz_kind": "stored",
+      "tier": "all",
+      "paper": true,
+      "role": "Isolate subgraph; paper nnz is the stored count, before symmetry expansion.",
+      "source": {
+        "format": "mtx",
+        "urls": [
+          "https://portal.nersc.gov/project/m1982/HipMCL/subgraphs/subgraph4_iso_vs_iso_30_70length_ALL.m100.oneindexed.mtx"
+        ],
+        "page": "https://portal.nersc.gov/project/m1982/HipMCL/subgraphs/"
+      }
+    },
+    {
+      "id": "isolates_subgraph5",
+      "group": "HipMCL",
+      "rows": 2186385,
+      "cols": 2186385,
+      "nnz": 66399522,
+      "nnz_kind": "stored",
+      "tier": "all",
+      "paper": true,
+      "role": "Smaller isolate subgraph; paper nnz is the stored count, before symmetry expansion.",
+      "source": {
+        "format": "mtx",
+        "urls": [
+          "https://portal.nersc.gov/project/m1982/HipMCL/subgraphs/subgraph5_iso_vs_iso_30_70length_ALL.m100.oneindexed.mtx"
+        ],
+        "page": "https://portal.nersc.gov/project/m1982/HipMCL/subgraphs/"
+      }
+    },
+    {
+      "id": "uniparc",
+      "group": "Incremental-HipMCL",
+      "rows": 2856197,
+      "cols": 2856197,
+      "nnz": 29621573,
+      "nnz_kind": "expanded",
+      "tier": "all",
+      "paper": true,
+      "role": "Protein similarity network; general Matrix Market storage.",
+      "source": {
+        "format": "mtx",
+        "urls": [
+          "https://portal.nersc.gov/project/m1982/Incremental-HipMCL/uniparc_active_p1_vs_uniparc_active_p1_id50_cov80.mtx"
+        ],
+        "page": "https://portal.nersc.gov/project/m1982/Incremental-HipMCL/"
+      }
+    },
+    {
+      "id": "reddit",
+      "group": "GNN",
+      "rows": 232965,
+      "cols": 232965,
+      "nnz": 57307946,
+      "nnz_kind": "stored",
+      "tier": "all",
+      "paper": true,
+      "role": "Social graph; paper nnz is the stored count, before symmetry expansion.",
+      "source": {
+        "format": "mtx",
+        "urls": [
+          "https://portal.nersc.gov/project/m1982/GNN/reddit.mtx"
+        ],
+        "page": "https://portal.nersc.gov/project/m1982/GNN/"
+      }
+    }
+  ]
+}

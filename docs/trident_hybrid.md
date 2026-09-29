@@ -80,35 +80,27 @@ thread and main thread may call MPI concurrently. The existing executable still
 requests only `MPI_THREAD_FUNNELED`. `--threads T` continues to mean T OpenMP
 compute threads, not T total threads including the service worker.
 
-Physical-node scripts reserve `T+1` cores per hybrid rank and T for two-sided.
-This binds the whole process to that CPU set; it does not pin the worker to an
-exclusive core inside it. On one node no remote-service worker is needed, but
-the hybrid scripts keep the same reservation policy for the entire sweep.
-Account for this difference in experiments: equal compute-thread counts use
-different core budgets. An equal-core-budget comparison should reduce hybrid's
-compute threads by one (and report that choice).
+The service worker needs CPU time in addition to the T compute threads.
+For controlled protocol comparisons, keep the compute-thread count and total CPU
+budget equal across variants, for example by binding every rank to T+1 cores.
+Process binding does not separately pin the worker to an exclusive core.
 
 ## Running
 
-Build with the existing CMake commands. To check both backends locally:
-
-```bash
-bash scripts/trident/run_local_check.sh
-VARIANT=hybrid bash scripts/trident/run_local_check.sh
-```
+Build with the existing CMake commands. The direct-launch examples in
+[Trident CPU](trident.md#running) also apply when selecting `build/trident_hybrid`.
 
 On an allocation of four physical nodes, two ranks per node, four compute
 threads and one extra core per rank:
 
 ```bash
 mpirun -np 8 --map-by ppr:2:node:PE=5 --bind-to core --nooversubscribe \
-  ./build/trident_hybrid --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx \
+  ./build/trident_hybrid --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx \
   --threads 4 --no-validate --results results/trident/hybrid_cluster_v1.tsv
 ```
 
-Use the shared strong/weak scaling and local-check scripts with `VARIANT=hybrid`;
-there are no hybrid-specific wrappers. See the [script guide](../scripts/README.md).
-No scheduler or resource allocation is implemented by these scripts.
+The [experiment plan](experiments.md) describes the intended comparisons.
+The [script guide](../scripts/README.md) covers the shared campaign commands and TSVs.
 
 ## Measurements and limits
 
@@ -143,8 +135,7 @@ Hybrid tests also count exactly one request/response per remote consumer/input
 per product. A skewed test executes 24 changed products without intervening
 gathers/barriers, with artificial rank/stage delays, then validates every result.
 CLI tests check topology, transport/protocol labels, validation and its optional
-disablement. Shell tests cover variant selection, extra CPU binding, result paths
-and failure propagation through the shared scripts.
+disablement.
 
 Local Linux/WSL tests are functional checks. Real-node scaling, MPI implementation
 behavior and the additional service-thread cost must be measured on the cluster.

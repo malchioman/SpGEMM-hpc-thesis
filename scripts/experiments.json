@@ -1,0 +1,29 @@
+{
+  "nodes": [1, 4],
+  "ranks_per_node": 2,
+  "threads": 4,
+  "cpus_per_rank": null,
+  "runs": 3,
+  "warmup": 2,
+  "repeats": 10,
+  "trials": 5,
+  "schedule": "guided",
+  "chunk": 64,
+  "validate": false,
+  "seed": 42,
+  "matrices": ["all"],
+  "pilot_matrices": ["cage8"],
+  "permutation_matrices": ["HV15R", "dielFilterV3real", "cage15", "archaea"],
+  "variants": [
+    "spgemm_two_sided", "spgemm_one_sided_get", "spgemm_one_sided_put",
+    "trident_two_sided", "trident_hybrid", "trident_get",
+    "trident_get_pipeline", "trident_put"
+  ],
+  "build_dir": "build",
+  "matrix_dir": "bin/matrices",
+  "results_dir": "results",
+  "mpi_launcher": "mpirun",
+  "mpi_args": [],
+  "hostfile": null,
+  "timeout": 0
+}

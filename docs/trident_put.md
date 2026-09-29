@@ -97,21 +97,10 @@ CSR/MPI count limits remain unchanged.
 The TSV schema is unchanged, with `implementation=trident_put`,
 `benchmark_protocol=trident_put_staged_csr_v1`,
 `inter_node_transport=one_sided_put` and `intra_node_transport=trident_two_sided`.
-Use the existing scripts, without new wrappers:
-
-```bash
-VARIANT=put bash scripts/trident/run_local_check.sh
-
-VARIANT=put NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-
-VARIANT=put NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-Default physical results are under `results/trident/trident_put/`; local checks
-use `results/tmp/trident_put_local_check_v1.tsv`. One script invocation runs one
-selected variant. See the [script guide](../scripts/README.md) for configuration.
+The CMake build produces `build/trident_put`. Use the direct-launch examples in
+[Trident CPU](trident.md#running), selecting that executable. The
+[experiment plan](experiments.md) describes the comparisons; the
+[script guide](../scripts/README.md) covers the shared campaign commands and TSVs.
 
 ## Tests
 

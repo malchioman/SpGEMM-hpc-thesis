@@ -69,24 +69,10 @@ progress or free target-side work on every MPI implementation.
 
 ## Running
 
-The normal CMake build produces `build/trident_get`. Use the **existing** scripts
-with `VARIANT=get`; there are no new GET wrapper scripts:
-
-```bash
-VARIANT=get bash scripts/trident/run_local_check.sh
-
-VARIANT=get NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_strong_scaling.sh matrices/A.mtx matrices/B.mtx
-
-VARIANT=get NODES="1 4" RANKS_PER_NODE=2 THREADS=4 VALIDATE=0 \
-  bash scripts/trident/run_weak_scaling.sh
-```
-
-Physical launches bind `THREADS` cores per rank, as for two-sided. GET does not
-request hybrid's additional service core. Default physical result files are
-under `results/trident/trident_get/`; local checks use
-`results/tmp/trident_get_local_check_v1.tsv`. A/B input rules, validation controls
-and script options are unchanged; see the [script guide](../scripts/README.md).
+The normal CMake build produces `build/trident_get`. Use the direct-launch
+examples in [Trident CPU](trident.md#running), selecting that executable.
+The [experiment plan](experiments.md) describes the comparisons; the
+[script guide](../scripts/README.md) covers the shared campaign commands and TSVs.
 
 ## Measurements and limits
 
@@ -99,8 +85,8 @@ setup plus the first product. Repeated inter-node phase measurements include
 publication, the two product-boundary barriers, GETs, flushes and local copies.
 The ending barrier may include load imbalance and waiting for slower ranks;
 this is not a pure network-transfer measurement. Use end-to-end product time as
-the primary comparison, accounting for these protocol differences and hybrid's
-different CPU budget. No claim of higher performance is made before cluster tests.
+the primary comparison, accounting for these protocol differences and Hybrid's
+additional service worker. No claim of higher performance is made before cluster tests.
 
 The existing limits remain: centralized input/gather, global A/B on rank 0 even
 with `--no-validate`, int-sized CSR/MPI counts and per-row hash accumulators.
@@ -118,7 +104,6 @@ arrays of both inputs in place across 24 generations, without external barriers,
 and compare fetched payloads exactly. They also reject invalid lifecycle calls,
 changed shapes and different input buffers. CLI tests cover validation, numeric
 arguments, source labels, topology rejection and protocol/transport metadata.
-Script tests cover selection, inference, binding, result paths and failures.
 
 Local Linux/WSL checks establish functional coverage, not physical network
 performance. Multi-node execution, MPI progress and scaling remain to be tested

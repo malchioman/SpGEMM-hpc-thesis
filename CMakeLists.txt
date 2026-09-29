@@ -142,14 +142,6 @@ enable_project_warnings(spgemm_options_smoke)
 
 enable_testing()
 add_test(NAME spgemm_options_smoke COMMAND spgemm_options_smoke)
-if(UNIX)
-    find_program(BASH_EXECUTABLE bash)
-    if(BASH_EXECUTABLE)
-        add_test(NAME scaling_scripts_smoke
-                 COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/scaling_scripts_smoke.sh)
-        set_tests_properties(scaling_scripts_smoke PROPERTIES TIMEOUT 30)
-    endif()
-endif()
 add_test(
     NAME matrix_market_smoke
     COMMAND matrix_market_smoke ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/tiny_symmetric.mtx
@@ -327,3 +319,14 @@ foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_si
 endforeach()
 
 include(tests/trident_tests.cmake)
+
+# Optional Python tooling tests; building/running the C++ benchmarks does not require Python.
+find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME matrix_tools
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/matrix_tools_test.py)
+    set_tests_properties(matrix_tools PROPERTIES TIMEOUT 60)
+    add_test(NAME experiment_scripts
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/experiment_scripts_test.py)
+    set_tests_properties(experiment_scripts PROPERTIES TIMEOUT 120)
+endif()
