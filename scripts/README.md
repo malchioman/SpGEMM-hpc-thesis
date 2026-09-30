@@ -46,6 +46,11 @@ target's compiler/MPI modules and obtain the allocation beforehand. CRESCO-8's
 modules, queue and available resources still need to be confirmed; the checked-in
 resource values are editable examples, not a verified cluster configuration.
 
+To request allocations and submit these experiments through **SbatchMan** on
+**Slurm or OpenPBS/PBS Pro**, follow the [scheduler guide](sbatchman/README.md).
+`prepare_sbatchman.py` generates one job per node count from the same settings,
+with matching MPI/OpenMP resource budgets and separate result directories.
+
 Build output stays in the chosen CMake directory, separate from matrix files:
 
 ```bash

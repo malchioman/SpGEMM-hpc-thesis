@@ -12,6 +12,10 @@ test-results/
 # Keep the old cache ignored until existing checkouts have moved it.
 /bin/matrices/
 __pycache__/
+/SbatchMan/
+.venv-sbatchman/
+scripts/sbatchman/generated/
+scripts/sbatchman/*.local.json
 *.o
 *.obj
 *.exe

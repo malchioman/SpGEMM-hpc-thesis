@@ -329,4 +329,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME experiment_scripts
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/experiment_scripts_test.py)
     set_tests_properties(experiment_scripts PROPERTIES TIMEOUT 120)
+    add_test(NAME sbatchman_scripts
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/sbatchman_scripts_test.py)
+    set_tests_properties(sbatchman_scripts PROPERTIES TIMEOUT 30)
 endif()
