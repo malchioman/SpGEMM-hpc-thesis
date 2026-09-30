@@ -8,7 +8,9 @@ compile_commands.json
 results/tmp/
 results/campaigns/
 test-results/
-bin/matrices/
+/matrices/
+# Keep the old cache ignored until existing checkouts have moved it.
+/bin/matrices/
 __pycache__/
 *.o
 *.obj

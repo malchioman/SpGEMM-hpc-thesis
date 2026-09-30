@@ -151,13 +151,13 @@ a finite value lets an unresponsive source fail so the next configured mirror
 can be tried. It does not change the scheduler's job walltime or make an invalid
 URL available.
 
-Original matrices and synthetic R inputs live directly in `bin/matrices/`, following
+Original matrices and synthetic R inputs live directly in `matrices/`, following
 the input directory of the [earlier PARCO project](https://github.com/malchioman/PARCO-Computing-2026-244944#repository-layout).
-Permuted matrices are grouped in `bin/matrices/permuted/`.
+Permuted matrices are grouped in `matrices/permuted/`.
 For example, downloading and preparing cage8 produces:
 
 ```text
-bin/matrices/
+matrices/
   cage8.mtx
   cage8_restriction.mtx
   permuted/
@@ -171,7 +171,7 @@ bin/matrices/
 permuted matrix in `permuted/`, R, and the three-case manifest. The seed is part of the permuted
 filename, while R is shared across seeds. The original matrix is not duplicated.
 Archives and temporary extraction directories are cleaned up after download.
-`bin/matrices/` is ignored by Git; the catalogue stays in `scripts/`.
+`matrices/` is ignored by Git; the catalogue stays in `scripts/`.
 `--root /shared/path/matrices` changes the input directory for both commands.
 Manifests use relative paths, so moving the complete directory including `metadata/`
 preserves the links. A completion record is written last; an original file without

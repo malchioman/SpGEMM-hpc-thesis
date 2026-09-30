@@ -134,7 +134,7 @@ Example with Open MPI on an allocation of four physical nodes, two ranks per nod
 
 ```bash
 mpirun -np 8 --map-by ppr:2:node:PE=4 --bind-to core ./build/trident_two_sided \
-  --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 4 \
+  --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 4 \
   --no-validate --results results/trident/cluster_two_sided.tsv
 ```
 

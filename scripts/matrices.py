@@ -315,8 +315,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["list", "fetch", "prepare"])
     parser.add_argument("--catalog", type=Path, default=REPO / "scripts/matrices_catalog.json")
-    parser.add_argument("--root", type=Path, default=REPO / "bin/matrices",
-                        help="matrix directory; permutations go in permuted/ (default: bin/matrices)")
+    parser.add_argument("--root", type=Path, default=REPO / "matrices",
+                        help="matrix directory; permutations go in permuted/ (default: matrices)")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--ids", nargs="+")
     selection.add_argument("--tier", choices=["pilot", "core", "all"],

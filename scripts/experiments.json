@@ -20,7 +20,7 @@
     "trident_get_pipeline", "trident_put"
   ],
   "build_dir": "build",
-  "matrix_dir": "bin/matrices",
+  "matrix_dir": "matrices",
   "results_dir": "results",
   "mpi_launcher": "mpirun",
   "mpi_args": [],
