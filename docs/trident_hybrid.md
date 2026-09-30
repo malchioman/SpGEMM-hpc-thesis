@@ -114,7 +114,7 @@ threads and one extra core per rank:
 
 ```bash
 mpirun -np 8 --map-by ppr:2:node:PE=5 --bind-to core --nooversubscribe \
-  ./build/trident_hybrid --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx \
+  ./build/trident_hybrid --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx \
   --threads 4 --no-validate --results results/trident/hybrid_cluster_v1.tsv
 ```
 

@@ -124,9 +124,9 @@ To multiply Matrix Market coordinate matrices, pass `--matrix-a` and `--matrix-b
 Their dimensions must satisfy `A.cols == B.rows`:
 
 ```bash
-mpirun -np 4 ./build/spgemm_two_sided --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
-mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
-mpirun -np 4 ./build/spgemm_one_sided_put --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
+mpirun -np 4 ./build/spgemm_two_sided --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
+mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
+mpirun -np 4 ./build/spgemm_one_sided_put --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --schedule guided --repeats 10 --trials 5
 ```
 
 Passing only `--matrix-a path/to/A.mtx` reuses the loaded A as B and computes
@@ -199,7 +199,7 @@ Add `--no-validate` to any baseline or Trident executable to skip both the seria
 reference product and the result comparison:
 
 ```bash
-mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a bin/matrices/A.mtx --matrix-b bin/matrices/B.mtx --threads 8 --no-validate
+mpirun -np 4 ./build/spgemm_one_sided_get --matrix-a matrices/A.mtx --matrix-b matrices/B.mtx --threads 8 --no-validate
 ```
 
 In this mode, both the summary and TSV report `validation=SKIPPED` and
@@ -230,9 +230,10 @@ bash scripts/run_all.sh --dry-run
 bash scripts/run_all.sh
 ```
 
-Downloaded matrices and synthetic R inputs are stored directly in `bin/matrices/`;
-permuted inputs are in `bin/matrices/permuted/`, and source records and experiment
-manifests are in `bin/matrices/metadata/`.
+Downloaded matrices and synthetic R inputs are stored directly in `matrices/`;
+permuted inputs are in `matrices/permuted/`, and source records and experiment
+manifests are in `matrices/metadata/`. Both matrix tools and experiment scripts use
+this repository directory by default. Build outputs remain in `build/`.
 
 The implementations' technical and scientific sources are listed in
 [`docs/sources.md`](docs/sources.md), with BibTeX citations in

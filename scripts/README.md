@@ -209,11 +209,22 @@ Keeping a finite socket timeout allows fallback to another configured URL when
 a server stops responding. Disabling it does not fix HTTP errors or broken URLs.
 
 `all` selects the ten main matrices; `--ids cage8` selects the separate pilot.
-Original matrices and synthetic R inputs live in `bin/matrices/`, permutations in
-`bin/matrices/permuted/`, and metadata in `bin/matrices/metadata/`. Verified files
-are reused. `--root /shared/path/matrices` changes the download/preparation root;
+Original matrices and synthetic R inputs live in `matrices/`, permutations in
+`matrices/permuted/`, and metadata in `matrices/metadata/`. The downloader and
+experiment scripts use this directory relative to the repository by default.
+Verified files are reused. `--root /shared/path/matrices` changes the download/preparation root;
 use the corresponding `--matrix-dir /shared/path/matrices` in experiment scripts.
 No network access is needed during experiments.
+
+For an existing checkout, move the entire old matrix directory once, from the
+repository root, before using the new defaults:
+
+```bash
+test ! -e matrices && mv -- bin/matrices matrices
+```
+
+Keep `metadata/` and `permuted/` with the original files. Manifest paths are
+relative, so existing verified inputs can be reused without downloading them again.
 
 ## Checks
 
