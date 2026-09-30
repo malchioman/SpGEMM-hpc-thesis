@@ -234,6 +234,16 @@ Downloaded matrices and synthetic R inputs are stored directly in `bin/matrices/
 permuted inputs are in `bin/matrices/permuted/`, and source records and experiment
 manifests are in `bin/matrices/metadata/`.
 
+For scheduler-managed runs, the [SbatchMan integration](scripts/sbatchman/README.md)
+supports **Slurm and OpenPBS/PBS Pro**. It translates the experiment settings into
+resource requests, freezes each job's parameters and checks its allocation before
+launching MPI. Preview a one-node pilot without submitting anything:
+
+```bash
+python3 scripts/prepare_sbatchman.py --scheduler slurm --campaign pilot-001 --action pilot --dry-run -- --nodes 1
+# Use --scheduler pbs for OpenPBS/PBS Pro.
+```
+
 The implementations' technical and scientific sources are listed in
 [`docs/sources.md`](docs/sources.md), with BibTeX citations in
 [`docs/references.bib`](docs/references.bib).

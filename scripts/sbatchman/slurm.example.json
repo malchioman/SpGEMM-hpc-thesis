@@ -1,0 +1,11 @@
+{
+  "cluster_name": "example-slurm",
+  "partition": null,
+  "account": null,
+  "walltime": "01:00:00",
+  "memory_per_node_mb": 16384,
+  "exclusive": true,
+  "module_init": null,
+  "modules": [],
+  "python": "python3"
+}

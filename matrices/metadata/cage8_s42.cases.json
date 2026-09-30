@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "generator": "spgemm_inputs_v1",
+  "matrix": "cage8",
+  "seed": 42,
+  "permutation": "splitmix64_fisher_yates_v1",
+  "restriction_source": "https://github.com/HicrestLaboratory/Trident/blob/c37debaccc58b72859f1837f260900a40094848c/amg_matrices/multigrid_solver_matrix_generator.cpp",
+  "files": {
+    "original": {
+      "rows": 1015,
+      "cols": 1015,
+      "entries": 11003,
+      "field": "real",
+      "symmetry": "general",
+      "expanded_entries": 11003,
+      "sha256": "6eff5636f6f83d1a500b15e9328fb1ef9d681498180ae3122be9afd9c2ac73cc",
+      "source_url": "https://www.cise.ufl.edu/research/sparse/MM/vanHeukelum/cage8.tar.gz",
+      "source_page": "https://sparse.tamu.edu/vanHeukelum/cage8",
+      "archive_sha256": "cd85f7d3c11ffa07fe9380a81f6c89a6034792ddf021278d0348ea7b91c09c42",
+      "fetched_utc": "2026-09-28T14:06:14.546922+02:00",
+      "path": "../cage8.mtx"
+    },
+    "permuted": {
+      "rows": 1015,
+      "cols": 1015,
+      "entries": 11003,
+      "field": "real",
+      "symmetry": "general",
+      "expanded_entries": 11003,
+      "sha256": "32d4caedffce20d5ed46dca99918f7457f911dd7659b2f8a20d25c3d78e15354",
+      "path": "../permuted/cage8_permuted_s42.mtx"
+    },
+    "restriction": {
+      "rows": 1015,
+      "cols": 2029,
+      "entries": 3043,
+      "field": "real",
+      "symmetry": "general",
+      "expanded_entries": 3043,
+      "sha256": "652d6d13ecb42de2cbf31d563f649684829eca6576b9afce8e437fd0ab629256",
+      "path": "../cage8_restriction.mtx"
+    }
+  },
+  "cases": [
+    {
+      "id": "cage8_square",
+      "product": "A*A",
+      "matrix_a": "original",
+      "matrix_b": "original"
+    },
+    {
+      "id": "cage8_permuted_s42",
+      "product": "(P*A*P^T)^2",
+      "matrix_a": "permuted",
+      "matrix_b": "permuted"
+    },
+    {
+      "id": "cage8_rectangular",
+      "product": "A*R",
+      "matrix_a": "original",
+      "matrix_b": "restriction"
+    }
+  ]
+}

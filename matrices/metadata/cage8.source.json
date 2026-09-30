@@ -1,0 +1,13 @@
+{
+  "rows": 1015,
+  "cols": 1015,
+  "entries": 11003,
+  "field": "real",
+  "symmetry": "general",
+  "expanded_entries": 11003,
+  "sha256": "6eff5636f6f83d1a500b15e9328fb1ef9d681498180ae3122be9afd9c2ac73cc",
+  "source_url": "https://www.cise.ufl.edu/research/sparse/MM/vanHeukelum/cage8.tar.gz",
+  "source_page": "https://sparse.tamu.edu/vanHeukelum/cage8",
+  "archive_sha256": "cd85f7d3c11ffa07fe9380a81f6c89a6034792ddf021278d0348ea7b91c09c42",
+  "fetched_utc": "2026-09-28T12:06:14.546922+00:00"
+}
