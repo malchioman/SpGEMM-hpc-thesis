@@ -79,7 +79,9 @@ Each plan contains `configs.yaml`, `jobs.yaml`, one frozen experiment JSON per
 node count and one shell entrypoint per job. The `.yaml` files use JSON syntax,
 which SbatchMan's YAML parser accepts; no YAML package is needed for generation.
 Existing plan directories are never overwritten, so pending jobs retain their
-parameters. Use a new campaign name for a changed plan or a new measurement series.
+parameters. Use a new campaign name for a changed plan or a new submission.
+Campaign names distinguish plans and SbatchMan logs; by default they do not
+change the runner's result paths. A new campaign appends to the same result files.
 
 The generator prints the exact next commands. For an unchanged example Slurm
 cluster label, they are:
@@ -139,31 +141,75 @@ the generated `select` request supplies that budget. Open MPI then discovers the
 allocation through its scheduler integration. A login-shell invocation without
 an allocation fails before launching any benchmark.
 
-One scheduler job is generated per node count. Jobs are sequential by default
-to avoid competing with each other for the network; SbatchMan uses `afterany`
+One scheduler job is generated per node count. Jobs in a plan are sequential
+to serialize writes to the shared TSVs and avoid competing with each other for
+the network; SbatchMan uses `afterany`
 dependencies, so a failed job does not suppress later node-count jobs. Within
 each job, MPI launches are serial. This is not a build/download pipeline:
 prepare binaries and inputs before submitting.
 
-Measurements are isolated by campaign, cluster and resource configuration:
+By default, measurements use exactly the same directory layout, per-variant TSV
+schemas and append behavior as `run_all.sh`. With the default `results_dir`:
 
 ```text
-results/campaigns/scaling-001/<cluster_name>/n4-r2-t4-c5/
+results/
   strong_scaling/<variant>.tsv
   permutation/<variant>.tsv
   rectangular/<variant>.tsv
   phase_analysis/<variant>.tsv
   matrix_structure/<variant>.tsv
+test-results/
+  pilot/<variant>.tsv
+  tmp/                         # failed-launch diagnostics
 ```
 
-Pilot checks and failed-launch diagnostics under the repository's `results/`
-tree are mirrored under `test-results/`, as in the existing runner. Custom
-result roots outside `results/` retain that root. Tables from distinct node-count
-jobs stay separate; there is no automatic merge. Existing analysis scripts can
-be rerun with `--results-dir` pointing at one job's result directory. Repeating
-a job with the same result root appends observations, including any successful
-observations from a previous partial run; it is not an automatic resume.
-SbatchMan also suppresses identical submissions unless forced/archived.
+For example, jobs with one and four nodes both append to
+`results/strong_scaling/trident_get.tsv`; the `nodes` column distinguishes their
+observations. Each successful `--action all` job regenerates the analysis TSVs
+from **all accumulated source observations** for its selected implementations,
+including earlier node-count jobs and earlier campaigns. Rows can appear in a
+different order than in a single `run_all.sh` invocation because each allocation
+completes its own stages before the next node-count job starts.
+
+`--results-dir` is honored as the runner's exact root. For example, a small
+rehearsal can keep the usual layout entirely outside thesis measurements:
+
+```bash
+python3 scripts/prepare_sbatchman.py --scheduler pbs \
+  --profile scripts/sbatchman/pbs.local.json --campaign check-001 --action all \
+  -- --nodes 1 --matrices cage8 --runs 1 --warmup 0 --repeats 2 --trials 1 \
+  --validate --results-dir test-results/pbs-check
+```
+
+This writes `test-results/pbs-check/strong_scaling/<variant>.tsv`, etc., with
+pilot files under `test-results/pbs-check/pilot/`. Pilot checks and failed-launch
+diagnostics under the repository's `results/` tree are mirrored under
+`test-results/`, following the existing runner's rules.
+
+To opt into the previous separation by campaign, cluster and resource
+configuration, add **`--isolate-results` before `--`**:
+
+```bash
+python3 scripts/prepare_sbatchman.py --scheduler pbs \
+  --profile scripts/sbatchman/pbs.local.json --campaign check-isolated-001 \
+  --isolate-results -- --nodes 1 4 --matrices cage8 \
+  --results-dir test-results/pbs-check
+```
+
+That mode writes, for example,
+`test-results/pbs-check/campaigns/check-isolated-001/<cluster_name>/n4-r2-t4-c5/strong_scaling/trident_get.tsv`.
+Its analysis exports stay within each resource configuration's result root.
+
+The result-directory lock still rejects concurrent writers. Sequential
+dependencies apply within a submitted plan, so submit separate plans that share
+a result root only after the earlier plan has finished. Repeating a job appends
+observations, including completed observations from a previous partial run; it
+is not an automatic resume. SbatchMan also suppresses identical submissions
+unless forced/archived.
+
+Plans generated before this change keep their frozen, isolated output paths.
+Generate a new plan with the updated script to use the default `run_all.sh`
+layout. Existing measurements and generated plans are not moved or rewritten.
 
 This integration targets SbatchMan 1.0.8. References:
 [configuration format](https://sbatchman.readthedocs.io/en/latest/learn/configurations/),

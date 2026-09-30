@@ -49,7 +49,9 @@ resource values are editable examples, not a verified cluster configuration.
 To request allocations and submit these experiments through **SbatchMan** on
 **Slurm or OpenPBS/PBS Pro**, follow the [scheduler guide](sbatchman/README.md).
 `prepare_sbatchman.py` generates one job per node count from the same settings,
-with matching MPI/OpenMP resource budgets and separate result directories.
+with matching MPI/OpenMP resource budgets and the same result paths and TSV
+append behavior as `run_all.sh`. Use `--isolate-results` on the generator only
+when separate campaign/cluster/resource directories are wanted for a test.
 
 Build output stays in the chosen CMake directory, separate from matrix files:
 

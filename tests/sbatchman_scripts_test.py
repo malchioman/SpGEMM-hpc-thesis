@@ -34,9 +34,10 @@ class SbatchManTest(unittest.TestCase):
             "all", "--nodes", "1", "4", "--ranks-per-node", "3", "--threads", "7",
             "--matrices", "cage8", "--results-dir", str(self.root / "results")])
 
-    def plan(self, scheduler):
+    def plan(self, scheduler, isolate_results=False):
         profile = planner.load_profile(scheduler, None)
-        return planner.make_plan(scheduler, profile, self.cfg, "check", self.root / "jobs")
+        return planner.make_plan(scheduler, profile, self.cfg, "check", self.root / "jobs",
+                                 isolate_results=isolate_results)
 
     def test_slurm_and_pbs_allocate_the_same_physical_resources(self):
         slurm = self.plan("slurm")["configs.yaml"]["example-slurm"]["configs"]
@@ -52,10 +53,10 @@ class SbatchManTest(unittest.TestCase):
             self.assertNotIn("cpus", p)  # no conflicting job-wide resource request
             self.assertNotIn("mem", p)
 
-    def test_snapshots_isolate_node_counts_and_preserve_sampling(self):
+    def test_snapshots_share_result_root_and_preserve_sampling(self):
         files = self.plan("pbs")
         snapshots = [value for name, value in files.items() if name.endswith(".json")]
-        self.assertEqual(len({cfg["results_dir"] for cfg in snapshots}), 2)
+        self.assertEqual({cfg["results_dir"] for cfg in snapshots}, {str(self.cfg.results_dir)})
         for nodes, cfg in zip((1, 4), snapshots):
             self.assertEqual(cfg["nodes"], [nodes])
             self.assertEqual(cfg["cpus_per_rank"], 8)
@@ -65,6 +66,43 @@ class SbatchManTest(unittest.TestCase):
         for job in files["jobs.yaml"]["jobs"]:
             command = shlex.split(job["config_jobs"][0]["command"])
             self.assertEqual(command, ["bash", str(self.root / "jobs" / (job["config"] + ".sh"))])
+
+    def test_isolation_is_opt_in_for_both_schedulers(self):
+        for scheduler in ("slurm", "pbs"):
+            with self.subTest(scheduler=scheduler):
+                files = self.plan(scheduler, isolate_results=True)
+                for nodes in self.cfg.nodes:
+                    name = "n%d-r3-t7-c8" % nodes
+                    self.assertEqual(files[name + ".json"]["results_dir"], str(
+                        self.cfg.results_dir / "campaigns/check" / ("example-" + scheduler) / name))
+                self.assertTrue(files["jobs.yaml"]["sequential"])
+
+    def test_cli_keeps_runner_paths_unless_isolation_is_requested(self):
+        for scheduler in ("slurm", "pbs"):
+            for isolate in (False, True):
+                for root_arg in (None, "results/thesis", "test-results/pbs-check"):
+                    with self.subTest(scheduler=scheduler, isolate=isolate, root=root_arg):
+                        output = self.root / (scheduler + str(isolate)) / (root_arg or "default")
+                        args = ["--scheduler", scheduler, "--campaign", "check", "--output-dir", str(output)]
+                        if isolate:
+                            args.append("--isolate-results")
+                        if root_arg:
+                            args += ["--", "--results-dir", root_arg]
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            planner.main(args)
+                        for nodes in (1, 4):
+                            name = "n%d-r2-t4-c5" % nodes
+                            snapshot = output / (name + ".json")
+                            cfg = planner.experiments.options(["all", "--config", str(snapshot)])
+                            expected = REPO / (root_arg or "results")
+                            if isolate:
+                                expected = expected / "campaigns/check" / ("example-" + scheduler) / name
+                            self.assertEqual(cfg.results_dir, expected.resolve())
+                            pilot = planner.experiments.output_root(cfg, "pilot")
+                            if root_arg == "test-results/pbs-check":
+                                self.assertEqual(pilot, expected.resolve())
+                            else:
+                                self.assertEqual(pilot, REPO / "test-results" / expected.relative_to(REPO / "results"))
 
     def test_preview_has_no_side_effects_and_generation_cannot_overwrite(self):
         output = self.root / "plan"
