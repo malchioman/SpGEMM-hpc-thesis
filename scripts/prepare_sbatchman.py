@@ -71,7 +71,7 @@ def scheduler_config(scheduler, profile, cfg, nodes, name):
                 custom_headers=headers)
 
 
-def make_plan(scheduler, profile, cfg, campaign, output):
+def make_plan(scheduler, profile, cfg, campaign, output, isolate_results=False):
     if cfg.local_check or cfg.hostfile or cfg.dry_run:
         raise ValueError("Scheduler jobs cannot use --local-check, --hostfile or runner --dry-run")
     keys = experiments.read_json(REPO / "scripts/experiments.json")
@@ -81,8 +81,12 @@ def make_plan(scheduler, profile, cfg, campaign, output):
     for nodes in cfg.nodes:
         name = "n%d-r%d-t%d-c%d" % (nodes, cfg.ranks_per_node, cfg.threads, cfg.cpus_per_rank)
         configs.append(scheduler_config(scheduler, profile, cfg, nodes, name))
-        settings = dict(snapshot, nodes=[nodes], results_dir=str(
-            cfg.results_dir / "campaigns" / campaign / profile["cluster_name"] / name))
+        # Keep the runner's output paths and append behavior unless isolation
+        # was explicitly requested. The sequential jobs share its result lock.
+        result_root = cfg.results_dir
+        if isolate_results:
+            result_root = result_root / "campaigns" / campaign / profile["cluster_name"] / name
+        settings = dict(snapshot, nodes=[nodes], results_dir=str(result_root))
         files[name + ".json"] = settings
         command = [profile["python"], str(REPO / "scripts/lib/allocated_experiment.py"),
                    "--scheduler", scheduler, "--action", cfg.action,
@@ -110,6 +114,8 @@ def main(argv=None):
     parser.add_argument("--campaign", required=True, help="new name for this set of jobs/results")
     parser.add_argument("--action", choices=experiments.RUN_ACTIONS + ("all",), default="all")
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--isolate-results", action="store_true", help=(
+        "separate results by campaign/cluster/resources; default: use the same output paths as run_all.sh"))
     parser.add_argument("--dry-run", action="store_true", help="print the plan without writing files")
     parser.add_argument("experiment_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -120,10 +126,14 @@ def main(argv=None):
         forwarded = forwarded[1:]
     cfg = experiments.options([args.action] + forwarded)
     output = (args.output_dir or PROFILES / "generated" / args.campaign / profile["cluster_name"]).resolve()
-    files = make_plan(args.scheduler, profile, cfg, args.campaign, output)
+    files = make_plan(args.scheduler, profile, cfg, args.campaign, output,
+                      isolate_results=args.isolate_results)
     print("%d %s jobs; ranks/node=%d, threads/rank=%d, cores/rank=%d, cores/node=%d" % (
         len(cfg.nodes), args.scheduler, cfg.ranks_per_node, cfg.threads, cfg.cpus_per_rank,
         cfg.ranks_per_node * cfg.cpus_per_rank))
+    print("Results: " + str(cfg.results_dir) + (
+        " (separate campaign/cluster/resource directories)" if args.isolate_results
+        else " (same paths as run_all.sh; observations append to existing TSVs)"))
     if args.dry_run:
         print(json.dumps(files, indent=2))
         return 0
