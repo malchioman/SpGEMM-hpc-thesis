@@ -2,7 +2,7 @@
 
 Run the shell scripts on Linux/WSL with Python 3.8+, CMake 3.21+, a C++17 compiler,
 OpenMP and **Open MPI**. The matrix and analysis tools need only Python's standard
-library. Benchmark timing code is unchanged.
+library. The benchmark and export measurement definitions are documented below.
 
 ## Eight entrypoints
 
@@ -168,8 +168,8 @@ MPI launch, without timestamps, execution IDs or averages. Inputs (`matrix_a`,
 seed. Rows also record dimensions, actual CSR nnz, resources, sampling settings,
 protocol, validation and all existing timing measures.
 
-The collector normalizes the two existing benchmark schemas without changing C++
-instrumentation. Baseline `halo_setup_seconds` and Trident `plan_setup_seconds`
+The collector normalizes the baseline and Trident benchmark schemas.
+Baseline `halo_setup_seconds` and Trident `plan_setup_seconds`
 remain separate. Unsupported fields are `NA`, including inter/intra-node timings
 for the row-distributed baselines. Trident `compute_gflops` is exported as
 `compute_gflops_p90`, matching its use of compute P90. First-product time includes
@@ -179,10 +179,35 @@ Re-running an experiment appends new observations to the same file. Re-running a
 analysis **regenerates** its selected implementation files from all accumulated
 source observations, preserving identical repetitions without duplicating them.
 Analysis scripts export tables; they do not calculate means, speedups or plots.
-`analyze_structure.sh` uses actual benchmark nnz (after symmetry expansion and
-duplicate handling), not the catalogue's stored-entry counts. Densities and mean
-row degree describe only part of matrix structure; cross-matrix interpretation
-also uses the application families in the experiment plan.
+Timing samples are retained in `*_samples_seconds` columns as JSON arrays, in
+trial-major and repetition-minor order. Each contains `trials * repeats` MPI-maximum
+durations and excludes warmups. The P90 columns remain available. Arrays stay in
+the same row and implementation file as their independent launch; no additional
+sample files or numbered filenames are generated. Older TSV headers are rejected;
+archive old tables before collecting observations with the new schema.
+
+`full_product_seconds` measures distribution, setup, the first product and its
+gather directly; it excludes input loading, validation and subsequent products.
+`first_gather_seconds` isolates that first collection. The existing steady-state
+P90 fields keep their scope. Full-product time is one observation per launch,
+not a sum of phase P90s. Its additional first gather changes the pre-warmup path,
+so keep measurements from the old and new builds in separate campaigns.
+
+`analyze_structure.sh` uses actual stored CSR entries after symmetry expansion,
+including input duplicates and explicit zeros. Input densities count stored entries,
+not distinct nonzero coordinates, and can exceed 1. Every experiment
+and analysis TSV now retains row-degree minimum, maximum, mean, population standard
+deviation, CV and empty-row counts for A/B/C. It also retains per-rank owned nnz
+and scalar-product counts as JSON integer arrays, together with work imbalance
+statistics. These metrics are collected outside the timers. The runner checks
+rank-array lengths, totals and summary consistency before appending a row.
+`result_finite=0` prevents an observation from entering experiment/analysis tables,
+even with `--no-validate`; a finite `SKIPPED` result still has no serial correctness
+check. Exports recheck the numeric measurements, sample/P90 agreement and GFLOP/s
+instead of trusting existing source rows solely because their header is correct.
+Work counts describe arithmetic load, not communication volume or memory use;
+see the [measurement definitions](../docs/experiments.md#matrix-structure-and-assigned-work).
+Cross-matrix interpretation also uses the application families in the experiment plan.
 
 Permutation files contain the permuted runs only: compare them with the matching
 original rows in `strong_scaling/`. Phase exports combine strong, permutation and
@@ -239,6 +264,8 @@ relative, so existing verified inputs can be reused without downloading them aga
 python3 tests/matrix_tools_test.py
 python3 tests/experiment_scripts_test.py
 ctest --test-dir build -R '^(matrix_tools|experiment_scripts)$' --output-on-failure
+# Real MPI instrumentation check, using the MPI transport environment for this machine:
+ctest --test-dir build -R '^benchmark_measurements$' --output-on-failure
 ```
 
 The offline campaign tests exercise all eight output contracts, repeated appends,

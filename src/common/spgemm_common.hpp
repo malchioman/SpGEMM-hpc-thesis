@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct Options {
@@ -61,6 +62,18 @@ bool validationPassed(double maxAbsoluteError);
 double maxRankValue(double value, MPI_Comm communicator);
 double maxElapsed(double start, MPI_Comm communicator);
 double percentile90(std::vector<double> samples);
+// JSON array in trial-major, repetition-minor order; no samples are discarded.
+std::string timingSamplesJson(const std::vector<double>& samples);
+
+using BenchmarkMetrics = std::vector<std::pair<std::string, std::string>>;
+// Structural scalar products assigned to the baseline's contiguous row partitions.
+std::vector<std::int64_t> rowPartitionWork(const CsrMatrix& a, const CsrMatrix& b, int ranks);
+// Collective, outside measured regions. Global matrices and work are used only on rank 0.
+// Rank arrays follow communicator rank order; nnz counts exclude halo/staging buffers.
+BenchmarkMetrics collectBenchmarkMetrics(
+    const CsrMatrix& globalA, const CsrMatrix& globalB, const CsrMatrix& globalC,
+    const CsrMatrix& localA, const CsrMatrix& localB, const CsrMatrix& localC,
+    const std::vector<std::int64_t>& work, MPI_Comm communicator);
 
 // An absent maximum error denotes skipped validation in both output formats.
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
@@ -70,7 +83,12 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops,
-                           std::optional<double> maxAbsoluteError);
+                           std::optional<double> maxAbsoluteError,
+                           const std::vector<double>& communicationSamples,
+                           const std::vector<double>& computeSamples,
+                           const std::vector<double>& endToEndSamples,
+                           double fullProductSeconds, double firstGatherSeconds,
+                           const BenchmarkMetrics& metrics);
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
@@ -78,4 +96,5 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops,
-                           std::optional<double> maxAbsoluteError);
+                           std::optional<double> maxAbsoluteError,
+                           double fullProductSeconds, double firstGatherSeconds);

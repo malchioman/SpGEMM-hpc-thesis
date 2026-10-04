@@ -75,6 +75,8 @@ class CampaignTest(unittest.TestCase):
             self.assertEqual(phases[0]["cpus_per_rank"], "3")
             self.assertEqual(phases[0]["repeats"], "3")
             self.assertEqual(phases[0]["validation"], "SKIPPED")
+            self.assertEqual(json.loads(phases[0]["compute_samples_seconds"]), [0.3] * 6)
+            self.assertEqual(json.loads(self.rows("pilot", variant)[0]["compute_samples_seconds"]), [0.3])
             self.assertEqual(phases[0]["matrix_a"], "cage8.mtx")
             self.assertEqual(phases[2]["matrix_a"], "permuted/cage8_permuted_s42.mtx")
             self.assertEqual(phases[4]["matrix_b"], "cage8_restriction.mtx")
@@ -104,13 +106,33 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(len(self.rows("phase_analysis", "trident_put")), 6)
 
     def test_failed_or_invalid_launch_is_not_appended(self):
-        for failure in ("exit", "protocol", "validation", "nan", "topology", "duplicate"):
+        for failure in ("exit", "protocol", "validation", "nan", "topology", "duplicate",
+                        "sample_count", "sample_nan", "sample_p90", "full_time",
+                        "rank_count", "rank_sum", "rank_stats", "row_stats", "nonfinite_product",
+                        "gflops", "phase_interval", "validation_error"):
             with self.subTest(failure=failure), patch.dict(os.environ, {"MOCK_FAILURE": failure}):
                 with self.assertRaisesRegex(RuntimeError, "no observation appended"):
                     self.run_action("strong_scaling", "--variants", "trident_get")
             self.assertFalse((self.results / "strong_scaling/trident_get.tsv").exists())
             self.assertFalse((self.results / ".experiments.lock").exists())
-        self.assertEqual(len(list((self.results / "tmp").glob("*/launch.log"))), 6)
+        self.assertEqual(len(list((self.results / "tmp").glob("*/launch.log"))), 18)
+
+    def test_analysis_rejects_corrupted_measurements(self):
+        self.run_action("strong_scaling", "--variants", "trident_get")
+        path = self.results / "strong_scaling/trident_get.tsv"
+        original = path.read_bytes()
+        for field, value in (("compute_p90_seconds", "nan"), ("compute_samples_seconds", "[]"),
+                             ("rank_work_mean", "99"), ("result_finite", "0"),
+                             ("validation", "PASS"), ("compute_gflops_p90", "99")):
+            with self.subTest(field=field):
+                rows = self.rows("strong_scaling")
+                rows[0][field] = value
+                runner.write_table(path, runner.FIELDS, rows)
+                for action in runner.ANALYSES:
+                    with self.assertRaises(ValueError):
+                        self.run_action(action, "--variants", "trident_get")
+                    self.assertFalse((self.results / action / "trident_get.tsv").exists())
+                path.write_bytes(original)
 
     def test_sbatchman_jobs_match_run_all_tables_and_append(self):
         args = ["all", "--config", str(self.config), "--nodes", "1", "4",

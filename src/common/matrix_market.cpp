@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -45,7 +46,8 @@ CsrMatrix readMatrixMarket(const std::string& path) {
     storage = lowercase(storage);
     field = lowercase(field);
     symmetry = lowercase(symmetry);
-    if (banner != "%%MatrixMarket" || object != "matrix" || storage != "coordinate") {
+    std::string extra;
+    if (banner != "%%MatrixMarket" || object != "matrix" || storage != "coordinate" || (header >> extra)) {
         throw std::runtime_error("only Matrix Market coordinate matrices are supported: " + path);
     }
     if (field != "real" && field != "integer" && field != "pattern") {
@@ -67,7 +69,7 @@ CsrMatrix readMatrixMarket(const std::string& path) {
     int entries = 0;
     {
         std::istringstream dimensions(line);
-        if (!(dimensions >> rows >> cols >> entries) || rows <= 0 || cols <= 0 || entries < 0) {
+        if (!(dimensions >> rows >> cols >> entries) || rows <= 0 || cols <= 0 || entries < 0 || (dimensions >> extra)) {
             throw std::runtime_error("invalid Matrix Market dimensions: " + path);
         }
     }
@@ -98,24 +100,33 @@ CsrMatrix readMatrixMarket(const std::string& path) {
         int row = 0;
         int column = 0;
         double value = 1.0;
-        if (!(values >> row >> column) || (field != "pattern" && !(values >> value))) {
+        if (!(values >> row >> column) || (field != "pattern" && !(values >> value)) ||
+            !std::isfinite(value) || (values >> extra)) {
             throw std::runtime_error("invalid Matrix Market entry: " + path);
+        }
+        if (row < 1 || row > rows || column < 1 || column > cols) {
+            throw std::runtime_error("Matrix Market entry index is out of range: " + path);
         }
         --row;
         --column;
-        if (row < 0 || row >= rows || column < 0 || column >= cols) {
-            throw std::runtime_error("Matrix Market entry index is out of range: " + path);
+        if (symmetry == "skew-symmetric" && row == column && value != 0.0) {
+            throw std::runtime_error("skew-symmetric diagonal must be zero: " + path);
         }
+        checkedCsrCount(entriesList.size() + (mirrored && row != column ? 2U : 1U));
         entriesList.push_back({row, column, value});
         if (mirrored && row != column) {
             entriesList.push_back({column, row, symmetry == "skew-symmetric" ? -value : value});
         }
     }
 
+    while (std::getline(input, line)) {
+        if (!isCommentOrEmpty(line)) throw std::runtime_error("more Matrix Market entries than declared: " + path);
+    }
+
     CsrMatrix matrix;
     matrix.rows = rows;
     matrix.cols = cols;
-    matrix.rowPtr.assign(rows + 1, 0);
+    matrix.rowPtr.assign(static_cast<std::size_t>(rows) + 1, 0);
     for (const Entry& entry : entriesList) {
         ++matrix.rowPtr[entry.row + 1];
     }

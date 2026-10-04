@@ -330,7 +330,8 @@ int main(int argc, char** argv) {
                                                   rank, ranks, communicator);
         CsrMatrix localMatrixB = distributeMatrix(rank == 0 ? &globalMatrixB : nullptr, bRowBlocks,
                                                   rank, ranks, communicator);
-        const double distributionSeconds = maxElapsed(distributionStart, communicator);
+        // Defer reporting reductions until the complete first product has finished.
+        const double distributionElapsed = MPI_Wtime() - distributionStart;
 
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupStart = MPI_Wtime();
@@ -361,6 +362,18 @@ int main(int argc, char** argv) {
         CsrMatrix localResult =
             spgemm(localMatrixA, bRowBlocks[rank], localMatrixB, putPlan.remoteBRows, communicator);
         const double firstProductEnd = MPI_Wtime();
+        checkMpi(MPI_Barrier(communicator), "MPI_Barrier(first gather)", communicator);
+        const double firstGatherStart = MPI_Wtime();
+        double firstGatherEnd = 0.0;
+        {
+            const auto firstResult = gatherCsrMatrix(
+                localResult, outputBlocks, matrixShape[3], rank, ranks, communicator);
+            firstGatherEnd = MPI_Wtime();
+            (void)firstResult;  // Release the collected first product before warmup.
+        }
+        const double fullProductSeconds = maxRankValue(firstGatherEnd - distributionStart, communicator);
+        const double firstGatherSeconds = maxRankValue(firstGatherEnd - firstGatherStart, communicator);
+        const double distributionSeconds = maxRankValue(distributionElapsed, communicator);
         const double haloSetupSeconds = maxRankValue(haloSetupEnd - haloSetupStart, communicator);
         const double firstProductSeconds = maxRankValue(firstProductEnd - haloSetupStart, communicator);
 
@@ -423,6 +436,11 @@ int main(int argc, char** argv) {
         const CsrMatrix globalResult =
             gatherCsrMatrix(localResult, outputBlocks, matrixShape[3], rank, ranks, communicator);
         const double gatherSeconds = maxElapsed(gatherStart, communicator);
+        const auto work = rank == 0 ? rowPartitionWork(globalMatrixA, globalMatrixB, ranks)
+                                    : std::vector<std::int64_t>{};
+        const auto metrics = collectBenchmarkMetrics(
+            globalMatrixA, globalMatrixB, globalResult, localMatrixA, localMatrixB, localResult,
+            work, communicator);
 
         if (rank == 0) {
             std::optional<double> error;
@@ -439,11 +457,14 @@ int main(int argc, char** argv) {
             appendBenchmarkResult(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
                                   globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
-                                  gatherSeconds, computeGflops, error);
+                                  gatherSeconds, computeGflops, error,
+                                  communicationSamples, computeSamples, endToEndSamples,
+                                  fullProductSeconds, firstGatherSeconds, metrics);
             printBenchmarkSummary(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
                                   globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
-                                  gatherSeconds, computeGflops, error);
+                                  gatherSeconds, computeGflops, error,
+                                  fullProductSeconds, firstGatherSeconds);
         }
         checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, communicator), "MPI_Bcast(validation)", communicator);
     } catch (const std::exception& error) {
