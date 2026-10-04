@@ -293,7 +293,7 @@ CsrMatrix spgemm(const CsrMatrix& localMatrixA, RowBlock localBBlock,
     CsrMatrix result;
     result.rows = localMatrixA.rows;
     result.cols = localMatrixB.cols;
-    result.rowPtr.resize(localMatrixA.rows + 1, 0);
+    result.rowPtr.resize(static_cast<std::size_t>(localMatrixA.rows) + 1, 0);
 
     std::vector<std::vector<int>> columnsByRow(localMatrixA.rows);
     std::vector<std::vector<double>> valuesByRow(localMatrixA.rows);
@@ -343,7 +343,7 @@ CsrMatrix spgemm(const CsrMatrix& localMatrixA, RowBlock localBBlock,
 
     int totalNonZeros = 0;
     for (int row = 0; row < result.rows; ++row) {
-        totalNonZeros += static_cast<int>(valuesByRow[row].size());
+        totalNonZeros = checkedCsrCount(static_cast<std::size_t>(totalNonZeros) + valuesByRow[row].size());
         result.rowPtr[row + 1] = totalNonZeros;
     }
     result.columnIndices.reserve(totalNonZeros);

@@ -203,6 +203,11 @@ require square matrices; `general` inputs may be rectangular. Complex-valued inp
 is not supported. File paths in direct executable commands are relative to the
 current working directory unless absolute paths are supplied.
 
+The reader preserves expanded input entries, including unsorted columns,
+duplicates and explicit zeros. Input `nnz` metrics count these stored entries;
+only product outputs combine equal coordinates and omit zero sums. Malformed
+records, trailing undeclared entries and nonzero skew-symmetric diagonals are rejected.
+
 ### Download and prepare catalogue inputs
 
 The matrix tool reads [scripts/matrices_catalog.json](scripts/matrices_catalog.json).
@@ -467,6 +472,8 @@ the accumulated observations without launching new products.
 | `distribution_seconds` | Initial matrix distribution from rank 0 |
 | `halo_setup_seconds` / `plan_setup_seconds` | Baseline halo preparation / Trident plan, buffers and backend preparation |
 | `first_product_seconds` | Setup plus the first complete product, measured together once |
+| `full_product_seconds` | Distribution, setup, first product and first gather, measured directly once |
+| `first_gather_seconds` | Collection of that first product, before warmup |
 | `communication_p90_seconds` | Communication work during repeated products, including protocol synchronization |
 | `compute_p90_seconds` | Local SpGEMM computation during repeated products |
 | `end_to_end_p90_seconds` | Complete repeated product, excluding input loading, distribution, setup, gather and validation |
@@ -476,6 +483,11 @@ Trident additionally reports `inter_node_p90_seconds` and `intra_node_p90_second
 Each duration is reduced to its maximum across ranks. Repeated-product P90 values
 use `repeats * trials` samples after the first product and extra warmups; trials
 share the same MPI processes. First-product time already includes setup.
+The `*_samples_seconds` arrays preserve the individual rank-maximum durations.
+The full-product timer excludes file loading, process-grid construction, validation
+and output. Measurement definitions and the instrumentation review are recorded in
+[the experiment plan](docs/experiments.md#reading-the-existing-measurements) and
+[the measurement audit](docs/measurement-audit.md).
 
 Phase maxima and P90s are computed independently, so they need not sum to the
 total. For Hybrid and GET Pipeline, phase times describe main-thread work and
@@ -500,6 +512,11 @@ returns a nonzero exit status on all ranks.
 `validation=SKIPPED`, `max_abs_error=NA`. The final C is still gathered, and rank 0
 still retains global A and B. This removes serial validation time but does not
 remove the root-memory limit. CSR indices and MPI counts also remain int-sized.
+The separate `result_finite` flag checks the final C for NaN/infinity without a
+serial product. Experiment scripts reject non-finite products even when validation
+is skipped. A `SKIPPED` row is not equivalent to `PASS`. See the
+[measurement definitions](docs/experiments.md#reading-the-existing-measurements)
+for raw samples, full-product time and structural-work metrics.
 
 Run the automated suite after building:
 

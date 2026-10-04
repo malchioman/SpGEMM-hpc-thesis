@@ -13,6 +13,9 @@ struct MatrixBlock {
 
 // Coarse 2D tile, then a contiguous row slice within that tile.
 MatrixBlock matrixBlock(int rows, int cols, const ProcessGrid& grid, int i, int j, int k);
+// Root-only, outside timing: products assigned to each rank's actual output tile.
+std::vector<std::int64_t> scalarProductsByRank(const CsrMatrix& a, const CsrMatrix& b,
+                                             const ProcessGrid& grid);
 CsrMatrix sliceBlock(const CsrMatrix& matrix, MatrixBlock block);
 CsrMatrix distributeBlocks(const CsrMatrix* matrix, int rows, int cols, const ProcessGrid& grid);
 CsrMatrix gatherBlocks(const CsrMatrix& local, int rows, int cols, const ProcessGrid& grid);

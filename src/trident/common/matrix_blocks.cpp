@@ -54,6 +54,37 @@ MatrixBlock matrixBlock(int rows, int cols, const ProcessGrid& grid, int i, int 
             partitionRows(cols, grid.side).at(j)};
 }
 
+std::vector<std::int64_t> scalarProductsByRank(const CsrMatrix& a, const CsrMatrix& b,
+                                             const ProcessGrid& grid) {
+    std::vector<std::int64_t> work(grid.size, 0);
+    // One column tile at a time limits temporary storage to O(B.rows + ranks).
+    for (int j = 0; j < grid.side; ++j) {
+        const auto columns = partitionRows(b.cols, grid.side)[j];
+        std::vector<int> rowDegrees(b.rows);
+        for (int row = 0; row < b.rows; ++row) {
+            const auto begin = b.columnIndices.begin() + b.rowPtr[row];
+            const auto end = b.columnIndices.begin() + b.rowPtr[row + 1];
+            // Matrix Market, permutation and synthetic inputs can have unsorted columns.
+            // Count stored entries exactly as the kernel does, including duplicates/zeros.
+            rowDegrees[row] = static_cast<int>(std::count_if(begin, end, [&](int column) {
+                return column >= columns.firstRow && column < columns.firstRow + columns.rows;
+            }));
+        }
+        for (int i = 0; i < grid.side; ++i) {
+            for (int k = 0; k < grid.nodeSize; ++k) {
+                const auto rows = matrixBlock(a.rows, b.cols, grid, i, j, k).rows;
+                auto& count = work[grid.rankAt(i, j, k)];
+                for (int row = rows.firstRow; row < rows.firstRow + rows.rows; ++row) {
+                    for (int p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
+                        count += rowDegrees[a.columnIndices[p]];
+                    }
+                }
+            }
+        }
+    }
+    return work;
+}
+
 CsrMatrix sliceBlock(const CsrMatrix& matrix, MatrixBlock block) {
     CsrMatrix result;
     result.rows = block.rows.rows;

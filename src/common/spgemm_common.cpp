@@ -119,8 +119,8 @@ void appendCsrBlock(CsrMatrix& globalResult, const CsrMatrix& localResult, RowBl
     for (int row = 0; row < localResult.rows; ++row) {
         const int first = localResult.rowPtr[row];
         const int last = localResult.rowPtr[row + 1];
-        globalResult.rowPtr[block.firstRow + row + 1] =
-            globalResult.rowPtr[block.firstRow + row] + (last - first);
+        globalResult.rowPtr[block.firstRow + row + 1] = checkedCsrCount(
+            static_cast<std::size_t>(globalResult.rowPtr[block.firstRow + row]) + (last - first));
         globalResult.columnIndices.insert(globalResult.columnIndices.end(),
                                           localResult.columnIndices.begin() + first,
                                           localResult.columnIndices.begin() + last);
@@ -135,7 +135,7 @@ CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& m
     CsrMatrix result;
     result.rows = matrixA.rows;
     result.cols = matrixB.cols;
-    result.rowPtr.resize(matrixA.rows + 1, 0);
+    result.rowPtr.resize(static_cast<std::size_t>(matrixA.rows) + 1, 0);
 
     std::unordered_map<int, double> accumulator;
     std::vector<int> touchedColumns;
@@ -169,7 +169,7 @@ CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& m
                 result.values.push_back(value);
             }
         }
-        result.rowPtr[row + 1] = static_cast<int>(result.values.size());
+        result.rowPtr[row + 1] = checkedCsrCount(result.values.size());
     }
     return result;
 }
@@ -323,16 +323,17 @@ CsrMatrix makeBandedMatrix(int rows, int cols, int nonZerosPerRow) {
     CsrMatrix matrix;
     matrix.rows = rows;
     matrix.cols = cols;
-    matrix.rowPtr.resize(rows + 1);
-    matrix.columnIndices.reserve(static_cast<std::size_t>(rows) * nonZerosPerRow);
-    matrix.values.reserve(static_cast<std::size_t>(rows) * nonZerosPerRow);
+    const auto count = checkedCsrCount(static_cast<std::size_t>(rows) * nonZerosPerRow);
+    matrix.rowPtr.resize(static_cast<std::size_t>(rows) + 1);
+    matrix.columnIndices.reserve(count);
+    matrix.values.reserve(count);
 
     for (int row = 0; row < rows; ++row) {
         matrix.rowPtr[row] = static_cast<int>(matrix.values.size());
         for (int entry = 0; entry < nonZerosPerRow; ++entry) {
-            const int column = (row * 17 + entry) % cols;
+            const int column = static_cast<int>((static_cast<std::int64_t>(row) * 17 + entry) % cols);
             matrix.columnIndices.push_back(column);
-            matrix.values.push_back(1.0 / static_cast<double>(1 + ((row + entry) % 13)));
+            matrix.values.push_back(1.0 / static_cast<double>(1 + ((static_cast<std::int64_t>(row) + entry) % 13)));
         }
     }
     matrix.rowPtr[rows] = static_cast<int>(matrix.values.size());
@@ -343,7 +344,7 @@ CsrMatrix sliceRows(const CsrMatrix& matrix, RowBlock block) {
     CsrMatrix slice;
     slice.rows = block.rows;
     slice.cols = matrix.cols;
-    slice.rowPtr.resize(block.rows + 1);
+    slice.rowPtr.resize(static_cast<std::size_t>(block.rows) + 1);
     const int firstEntry = matrix.rowPtr[block.firstRow];
     const int lastEntry = matrix.rowPtr[block.firstRow + block.rows];
     slice.columnIndices.assign(matrix.columnIndices.begin() + firstEntry,
@@ -367,7 +368,7 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
         for (int target = 0; target < ranks; ++target) {
             slices.push_back(sliceRows(*globalMatrix, blocks[target]));
             headers[target] = {slices.back().rows, slices.back().cols,
-                               static_cast<int>(slices.back().values.size())};
+                               checkedCsrCount(slices.back().values.size())};
         }
         for (int target = 1; target < ranks; ++target) {
             MPI_Request request = MPI_REQUEST_NULL;
@@ -375,7 +376,7 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
                                &request),
                      "MPI_Isend(matrix header)", communicator);
             requests.push_back(request);
-            checkMpi(MPI_Isend(slices[target].rowPtr.data(), headers[target][0] + 1, MPI_INT,
+            checkMpi(MPI_Isend(slices[target].rowPtr.data(), checkedCsrCount(slices[target].rowPtr.size()), MPI_INT,
                                target, kRowPtrTag, communicator, &request),
                      "MPI_Isend(row pointers)", communicator);
             requests.push_back(request);
@@ -398,11 +399,11 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
     CsrMatrix localMatrix;
     localMatrix.rows = header[0];
     localMatrix.cols = header[1];
-    localMatrix.rowPtr.resize(localMatrix.rows + 1);
+    localMatrix.rowPtr.resize(static_cast<std::size_t>(localMatrix.rows) + 1);
     localMatrix.columnIndices.resize(header[2]);
     localMatrix.values.resize(header[2]);
     std::vector<MPI_Request> requests(3, MPI_REQUEST_NULL);
-    checkMpi(MPI_Irecv(dataOrNull(localMatrix.rowPtr), localMatrix.rows + 1, MPI_INT, 0,
+    checkMpi(MPI_Irecv(dataOrNull(localMatrix.rowPtr), checkedCsrCount(localMatrix.rowPtr.size()), MPI_INT, 0,
                        kRowPtrTag, communicator, &requests[0]),
              "MPI_Irecv(row pointers)", communicator);
     checkMpi(MPI_Irecv(dataOrNull(localMatrix.columnIndices), header[2], MPI_INT, 0, kColumnTag,
@@ -428,7 +429,7 @@ CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlo
         CsrMatrix globalResult;
         globalResult.rows = blocks.back().firstRow + blocks.back().rows;
         globalResult.cols = resultCols;
-        globalResult.rowPtr.assign(globalResult.rows + 1, 0);
+        globalResult.rowPtr.assign(static_cast<std::size_t>(globalResult.rows) + 1, 0);
 
         appendCsrBlock(globalResult, localResult, blocks[0], resultCols);
 
@@ -441,11 +442,11 @@ CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlo
             CsrMatrix peerResult;
             peerResult.rows = header[0];
             peerResult.cols = header[1];
-            peerResult.rowPtr.resize(peerResult.rows + 1);
+            peerResult.rowPtr.resize(static_cast<std::size_t>(peerResult.rows) + 1);
             peerResult.columnIndices.resize(header[2]);
             peerResult.values.resize(header[2]);
 
-            checkMpi(MPI_Recv(dataOrNull(peerResult.rowPtr), peerResult.rows + 1, MPI_INT, peer,
+            checkMpi(MPI_Recv(dataOrNull(peerResult.rowPtr), checkedCsrCount(peerResult.rowPtr.size()), MPI_INT, peer,
                               kResultRowPtrTag, communicator, MPI_STATUS_IGNORE),
                      "MPI_Recv(result row pointers)", communicator);
             checkMpi(MPI_Recv(dataOrNull(peerResult.columnIndices), header[2], MPI_INT, peer,
@@ -460,10 +461,10 @@ CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlo
     }
 
     const std::array<int, 3> header = {localResult.rows, localResult.cols,
-                                       static_cast<int>(localResult.values.size())};
+                                       checkedCsrCount(localResult.values.size())};
     checkMpi(MPI_Send(header.data(), 3, MPI_INT, 0, kResultHeaderTag, communicator),
              "MPI_Send(result header)", communicator);
-    checkMpi(MPI_Send(dataOrNull(localResult.rowPtr), localResult.rows + 1, MPI_INT, 0,
+    checkMpi(MPI_Send(dataOrNull(localResult.rowPtr), checkedCsrCount(localResult.rowPtr.size()), MPI_INT, 0,
                       kResultRowPtrTag, communicator),
              "MPI_Send(result row pointers)", communicator);
     checkMpi(MPI_Send(dataOrNull(localResult.columnIndices), header[2], MPI_INT, 0,
@@ -561,6 +562,17 @@ double percentile90(std::vector<double> samples) {
     return samples[index];
 }
 
+std::string timingSamplesJson(const std::vector<double>& samples) {
+    std::ostringstream output;
+    output << std::setprecision(17) << '[';
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        if (i) output << ',';
+        output << samples[i];
+    }
+    output << ']';
+    return output.str();
+}
+
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
@@ -568,7 +580,12 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops,
-                           std::optional<double> maxAbsoluteError) {
+                           std::optional<double> maxAbsoluteError,
+                           const std::vector<double>& communicationSamples,
+                           const std::vector<double>& computeSamples,
+                           const std::vector<double>& endToEndSamples,
+                           double fullProductSeconds, double firstGatherSeconds,
+                           const BenchmarkMetrics& metrics) {
     const std::filesystem::path outputPath(options.resultsPath);
     const std::filesystem::path parent = outputPath.parent_path();
     std::error_code error;
@@ -585,13 +602,16 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
         throw std::runtime_error("cannot inspect results file: " + outputPath.string());
     }
 
-    const std::string header =
+    std::string header =
         "implementation\texperiment\tmatrix_a_source\tmatrix_b_source"
         "\ta_rows\ta_cols\tb_rows\tb_cols\ta_nnz\tb_nnz\tc_nnz\tranks"
         "\tthreads_per_rank\tomp_schedule\tomp_chunk\twarmup\trepeats\ttrials"
         "\tdistribution_seconds\thalo_setup_seconds\tfirst_product_seconds"
         "\tcommunication_p90_seconds\tcompute_p90_seconds\tend_to_end_p90_seconds"
-        "\tgather_seconds\tcompute_gflops_p90\tmax_abs_error\tvalidation\tbenchmark_protocol";
+        "\tgather_seconds\tcompute_gflops_p90\tmax_abs_error\tvalidation\tbenchmark_protocol"
+        "\tcommunication_samples_seconds\tcompute_samples_seconds\tend_to_end_samples_seconds"
+        "\tfull_product_seconds\tfirst_gather_seconds";
+    for (const auto& metric : metrics) header += '\t' + metric.first;
     if (!writeHeader) {
         std::ifstream existing(outputPath);
         std::string existingHeader;
@@ -628,7 +648,15 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
     } else {
         output << "NA";
     }
-    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_v2\n";
+    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_v2\t"
+           << timingSamplesJson(communicationSamples) << '\t'
+           << timingSamplesJson(computeSamples) << '\t'
+           << timingSamplesJson(endToEndSamples) << '\t'
+           << fullProductSeconds << '\t' << firstGatherSeconds;
+    for (const auto& metric : metrics) output << '\t' << metric.second;
+    output << '\n';
+    output.flush();
+    if (!output) throw std::runtime_error("failed writing results file: " + outputPath.string());
 }
 
 void printBenchmarkSummary(const std::string& implementation, const Options& options, int ranks,
@@ -638,7 +666,8 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops,
-                           std::optional<double> maxAbsoluteError) {
+                           std::optional<double> maxAbsoluteError,
+                           double fullProductSeconds, double firstGatherSeconds) {
     std::cout << std::fixed << std::setprecision(6) << "implementation=" << implementation << '\n'
               << "benchmark_protocol=prepared_halo_v2\n"
               << "ranks=" << ranks << " threads_per_rank=" << options.threads
@@ -662,6 +691,8 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
               << "compute_p90_seconds=" << computeP90Seconds << '\n'
               << "end_to_end_p90_seconds=" << endToEndP90Seconds << '\n'
               << "gather_seconds=" << gatherSeconds << '\n'
+              << "full_product_seconds=" << fullProductSeconds << '\n'
+              << "first_gather_seconds=" << firstGatherSeconds << '\n'
               << "compute_gflops=" << computeGflops << '\n'
               << "max_abs_error=";
     if (maxAbsoluteError) {

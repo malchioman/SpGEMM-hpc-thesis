@@ -23,6 +23,7 @@ enable_project_warnings(matrix_market)
 
 add_library(spgemm_support STATIC
     src/common/spgemm_common.cpp
+    src/common/benchmark_metrics.cpp
 )
 target_compile_features(spgemm_support PUBLIC cxx_std_17)
 target_include_directories(spgemm_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/common)
@@ -141,6 +142,10 @@ target_link_libraries(spgemm_options_smoke PRIVATE spgemm_support)
 enable_project_warnings(spgemm_options_smoke)
 
 enable_testing()
+add_executable(matrix_market_contract tests/matrix_market_contract.cpp)
+target_link_libraries(matrix_market_contract PRIVATE matrix_market)
+enable_project_warnings(matrix_market_contract)
+add_test(NAME matrix_market_contract COMMAND matrix_market_contract ${CMAKE_CURRENT_BINARY_DIR}/reader_contract.mtx)
 add_test(NAME spgemm_options_smoke COMMAND spgemm_options_smoke)
 add_test(
     NAME matrix_market_smoke
@@ -323,6 +328,11 @@ include(tests/trident_tests.cmake)
 # Optional Python tooling tests; building/running the C++ benchmarks does not require Python.
 find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME benchmark_measurements
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_measurements_test.py
+                --build-dir ${CMAKE_CURRENT_BINARY_DIR} --mpi-launcher ${MPIEXEC_EXECUTABLE}
+                --numproc-flag=${MPIEXEC_NUMPROC_FLAG})
+    set_tests_properties(benchmark_measurements PROPERTIES TIMEOUT 180 PROCESSORS 8)
     add_test(NAME matrix_tools
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/matrix_tools_test.py)
     set_tests_properties(matrix_tools PROPERTIES TIMEOUT 60)

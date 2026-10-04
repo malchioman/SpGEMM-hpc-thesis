@@ -75,8 +75,9 @@ counts. Those catalogue entries explicitly use `nnz_kind=stored`. The downloader
 preserves the original header and values, validates the declared count, and records
 both `entries` and `expanded_entries` in `metadata/<id>.source.json`. Our reader and preparation
 expand each off-diagonal symmetric entry; expanded counts can therefore be larger
-than the paper's table. Expanded entries are counted before duplicate coordinates
-are merged by the C++ reader. In particular, the isolates sources contain entries
+than the paper's table. The C++ reader preserves expanded input entries, including
+duplicate coordinates and explicit zeros; it does not sort or merge them. The
+product kernels accumulate their contributions. In particular, the isolates sources contain entries
 in both triangles. Matching names and stored counts does not establish identical
 symmetry/duplicate handling in the GPU experiments. Do not silently relabel these
 files as `general` or interpret the table count as the CPU benchmark's final nnz.
@@ -264,20 +265,41 @@ MPI environment and sampling settings for comparable repetitions. Running on the
 same machine does not eliminate runtime variability, which is why repetitions
 remain useful; dates are not needed to calculate their mean.
 
-Current timed product fields are P90 statistics for each execution. Their arithmetic
+Timed product fields include P90 statistics and the individual samples for each
+execution. The `*_samples_seconds` columns contain JSON arrays of length
+`trials * repeats`, ordered first by trial and then by repetition. Entry
+`trial * repeats + repeat` (zero-based) is the MPI maximum for that timed product;
+warmups and the first product are excluded. Baselines have communication, compute
+and end-to-end arrays; Trident also has inter-node and intra-node arrays. Each row
+still represents one independent MPI launch, so samples remain grouped by launch.
+Scripts verify sample counts, finite nonnegative values and agreement with the
+reported P90, and retain the arrays in experiment and analysis exports.
+
+The arithmetic
 mean across repeated executions is a **mean of per-execution P90 values**, not the
 mean of individual product times or the P90 of pooled samples. This is a descriptive
 summary of repeated run-level estimates, not a way of reconstructing the overall
 percentile. Use the same number of samples per execution and label the statistic
 explicitly; report the number of executions and variability across their P90 values
-alongside the mean. A pooled percentile would require the underlying measurements
-or an appropriate distribution representation; averaging quantiles does not recover
-it (see the [Prometheus explanation](https://prometheus.io/docs/practices/histograms/)
+alongside the mean. Use the saved arrays to calculate other within-launch statistics
+or pooled percentiles, retaining the distinction between independent launches and
+their internal repetitions. Averaging quantiles does not recover a pooled percentile
+(see the [Prometheus explanation](https://prometheus.io/docs/practices/histograms/)
 and [NIST percentile definition](https://www.itl.nist.gov/div898/handbook/prc/section2/prc262.htm)).
-This organization does not change the benchmark timers or their within-execution
-aggregation.
+Retaining samples does not change the steady-state timers or their P90 aggregation.
 
 ## Reading the existing measurements
+
+`full_product_seconds` is a direct MPI-maximum elapsed time from the start of
+input distribution through setup, the first multiplication and collection of that
+first result. Input file loading, rank-grid construction, reporting reductions,
+validation, warmups, subsequent products and file output are excluded. Necessary
+in-path synchronizations are included. The first gathered result is released
+before warmup; `first_gather_seconds` records this collection separately, while
+`gather_seconds` still measures collection of the final timed result. This is one
+full-product observation per launch, not a P90 or a sum of phase maxima. Compare
+it separately from the steady-state product timings. The additional first gather
+changes the pre-warmup execution path; keep old and new campaigns separate.
 
 Use end-to-end product P90 as the primary performance comparison. For each variant,
 strong-scaling speedup is its own reference time divided by its time at the larger
@@ -297,6 +319,65 @@ GET versus GET Pipeline total product time to assess the practical pipeline bene
 The row-distributed baselines have different phase definitions; compare them with
 Trident primarily through end-to-end product time, and interpret their phases
 within their respective algorithms.
+
+### Matrix structure and assigned work
+
+Every observation, including phase and structure exports, retains the following
+metrics. They are computed after the final timed gather, even with validation
+disabled, and do not add counters to the measured multiplication loops.
+
+| Fields | Meaning |
+| --- | --- |
+| `a/b/c_row_nnz_min`, `a/b/c_row_nnz_max`, `a/b/c_mean_nnz_per_row` | Minimum, maximum and mean CSR nonzeros per row of each global matrix |
+| `a/b/c_row_nnz_stddev`, `a/b/c_row_nnz_cv`, `a/b/c_empty_rows` | Population standard deviation, coefficient of variation (standard deviation / mean), and count of empty rows; empty rows participate in all statistics |
+| `rank_a_nnz`, `rank_b_nnz`, `rank_c_nnz` | JSON integer arrays of locally owned nonzeros, in MPI rank order; their sums equal the corresponding global nnz |
+| `rank_scalar_products`, `scalar_products` | JSON integer array of scalar multiplications assigned to each rank for one product, and its global sum |
+| `rank_work_min`, `rank_work_max`, `rank_work_mean`, `rank_work_stddev`, `rank_work_cv` | Population statistics of the assigned scalar-product counts, including ranks with zero work |
+| `rank_work_max_over_mean`, `idle_ranks` | Maximum / mean assigned work, and number of ranks assigned zero scalar products |
+
+Here `a/b/c_...` denotes three separate columns, for example `a_row_nnz_cv`.
+Input statistics refer to stored CSR entries after symmetry expansion, including
+duplicates and explicit zeros, not the number of distinct nonzero coordinates.
+Consequently input row counts can exceed the number of columns, and an input
+`*_density` above 1 is possible; it describes stored entries / matrix size. Compare
+these representation characteristics alongside the application family. C is the
+final measured result with unique sorted columns and zero sums removed, including the effect
+of numerical cancellation on stored nonzeros. With zero mean, CV and maximum/mean
+are reported as 0; positive uniform work gives maximum/mean 1.
+
+Assigned work is calculated exactly from the sparsity pattern and the partition:
+for each stored A(i,k), count the B(k,j) entries in the rank's owned output rows
+and columns. Baselines use contiguous output-row blocks; Trident uses the actual
+`(i,j,k)` process-grid mapping, including the row split within each node. The total
+is checked against the independent global scalar-multiplication count. The usual
+GFLOP/s convention counts two arithmetic operations per scalar product. These
+are structural work counts, not hardware instruction counters or measured rank
+durations; hashing, allocation, cache effects and communication can still create
+runtime imbalance even when counts are balanced.
+
+The nnz arrays count owned matrix data, excluding remote copies, staging buffers
+and root-only gathered copies. They do not measure communication bytes or peak
+memory. Row variability and assigned-work imbalance help interpret strong scaling,
+permutation and rectangular products, but do not by themselves explain every
+performance difference. Matrix-structure exports also retain the existing global
+densities. No extra MPI products are run for these analyses.
+
+The regression test `benchmark_measurements` runs all eight implementations on
+a hand-checkable rectangular product with unsorted columns using four and eight
+ranks, empty matrices, duplicate coordinates and explicit zeros. It also verifies
+that overflow to infinity is rejected by the collector even with serial validation
+disabled. It checks numerical validation, complete sample arrays, P90 agreement,
+timer bounds, row statistics and exact per-rank work counts. Trident uses logical
+nodes here; this verifies the instrumentation, not physical-cluster performance.
+
+`result_finite` records whether every stored value in the final C is finite. This
+scan is outside all product timers and does not require a serial reference. The
+experiment collector and analysis exports reject `result_finite=0`, inconsistent
+P90/sample arrays, phase samples longer than their containing interval, incorrect
+GFLOP/s and incompatible validation status/error values. A finite result marked
+`SKIPPED` is still not a numerically validated result. `PASS` uses the existing
+strict absolute tolerance of `1e-10`, which can reject legitimate rounding
+differences on large-magnitude inputs; this is not a relative-error criterion.
 
 ## Matrix-tool verification
 

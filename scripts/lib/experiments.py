@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -39,11 +40,20 @@ TIMINGS = [
     "distribution_seconds", "halo_setup_seconds", "plan_setup_seconds",
     "first_product_seconds", "inter_node_p90_seconds", "intra_node_p90_seconds",
     "communication_p90_seconds", "compute_p90_seconds", "end_to_end_p90_seconds",
-    "gather_seconds",
+    "gather_seconds", "full_product_seconds", "first_gather_seconds",
 ]
-PHASE_FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation"]
-FIELDS = PHASE_FIELDS + ["compute_gflops_p90"]
-STRUCTURE_FIELDS = FIELDS + ["a_density", "b_density", "c_density", "a_mean_nnz_per_row"]
+SAMPLE_FIELDS = [phase + "_samples_seconds" for phase in
+                 ("inter_node", "intra_node", "communication", "compute", "end_to_end")]
+ROW_METRICS = [prefix + suffix for prefix in ("a", "b", "c") for suffix in
+               ("_row_nnz_min", "_row_nnz_max", "_mean_nnz_per_row", "_row_nnz_stddev",
+                "_row_nnz_cv", "_empty_rows")]
+RANK_ARRAYS = ["rank_a_nnz", "rank_b_nnz", "rank_c_nnz", "rank_scalar_products"]
+WORK_METRICS = ["scalar_products", "rank_work_min", "rank_work_max", "rank_work_mean",
+                "rank_work_stddev", "rank_work_cv", "rank_work_max_over_mean", "idle_ranks"]
+METRIC_FIELDS = ROW_METRICS + RANK_ARRAYS + WORK_METRICS + ["result_finite"]
+PHASE_FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation"] + SAMPLE_FIELDS + METRIC_FIELDS
+FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation", "compute_gflops_p90"] + SAMPLE_FIELDS + METRIC_FIELDS
+STRUCTURE_FIELDS = FIELDS + ["a_density", "b_density", "c_density"]
 
 
 def repo_path(value):
@@ -295,6 +305,101 @@ def command(cfg, action, case, variant, nodes, raw_path):
     return cmd
 
 
+def validate_structure_metrics(row):
+    """Reject incomplete or inconsistent telemetry before appending an observation."""
+    for key in ROW_METRICS + WORK_METRICS:
+        value = float(row[key])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Invalid structure metric: " + key)
+
+    def agrees(key, expected):
+        if not math.isclose(float(row[key]), expected, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError("Inconsistent structure metric: " + key)
+
+    for prefix, rows_key, cols_key in (("a", "a_rows", "a_cols"), ("b", "b_rows", "b_cols"),
+                                       ("c", "a_rows", "b_cols")):
+        count = int(row[rows_key])
+        mean = int(row[prefix + "_nnz"]) / count if count else 0
+        minimum, maximum = (int(row[prefix + suffix]) for suffix in ("_row_nnz_min", "_row_nnz_max"))
+        empty = int(row[prefix + "_empty_rows"])
+        # Input CSR retains duplicate coordinates and explicit zeros. Stored entries per
+        # row can exceed the column count; only the accumulated output is canonical.
+        limit = int(row[cols_key]) if prefix == "c" else int(row[prefix + "_nnz"])
+        if not (0 <= minimum <= mean <= maximum <= limit and 0 <= empty <= count):
+            raise ValueError("Invalid row-degree bounds: " + prefix)
+        agrees(prefix + "_mean_nnz_per_row", mean)
+        agrees(prefix + "_row_nnz_cv", float(row[prefix + "_row_nnz_stddev"]) / mean if mean else 0)
+
+    arrays = {}
+    for field, total in zip(RANK_ARRAYS, ("a_nnz", "b_nnz", "c_nnz", "scalar_products")):
+        values = json.loads(row[field])
+        if (not isinstance(values, list) or len(values) != int(row["ranks"]) or
+                any(type(value) is not int or value < 0 for value in values) or
+                sum(values) != int(row[total])):
+            raise ValueError("Invalid rank counts: " + field)
+        arrays[field] = values
+    work = arrays["rank_scalar_products"]
+    mean, stddev = statistics.mean(work), statistics.pstdev(work)
+    for key, expected in (("rank_work_min", min(work)), ("rank_work_max", max(work)),
+                          ("rank_work_mean", mean), ("rank_work_stddev", stddev),
+                          ("rank_work_cv", stddev / mean if mean else 0),
+                          ("rank_work_max_over_mean", max(work) / mean if mean else 0),
+                          ("idle_ranks", work.count(0))):
+        agrees(key, expected)
+
+
+def validate_measurements(row, trident):
+    """Shared checks for a new launch and for observations reused by analysis exports."""
+    validate = row["validation"] == "PASS"
+    if row["validation"] not in ("PASS", "SKIPPED") or row["result_finite"] != "1":
+        raise ValueError("Failed validation or non-finite product")
+    if validate:
+        if not 0 <= float(row["max_abs_error"]) < 1e-10:
+            raise ValueError("PASS disagrees with the numerical validation error")
+    elif row["max_abs_error"] != "NA":
+        raise ValueError("Skipped validation must have max_abs_error=NA")
+    for key in ("a_rows", "a_cols", "b_rows", "b_cols", "ranks", "repeats", "trials"):
+        if int(row[key]) < 1:
+            raise ValueError("Invalid positive count: " + key)
+    required = [key for key in TIMINGS if key not in (
+        ("halo_setup_seconds",) if trident else ("plan_setup_seconds", "inter_node_p90_seconds", "intra_node_p90_seconds"))]
+    for key in required + ["compute_gflops_p90"]:
+        value = float(row[key])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Invalid benchmark metric: " + key)
+    for key in ("a_nnz", "b_nnz", "c_nnz"):
+        if int(row[key]) < 0:
+            raise ValueError("Invalid nonzero count: " + key)
+    if any(float(row[phase]) > float(row["full_product_seconds"]) for phase in
+           ("distribution_seconds", "first_product_seconds", "first_gather_seconds")):
+        raise ValueError("Full product time is shorter than a contained phase")
+    setup = "plan_setup_seconds" if trident else "halo_setup_seconds"
+    if float(row[setup]) > float(row["first_product_seconds"]):
+        raise ValueError("First product time is shorter than setup")
+    arrays = {}
+    for field in SAMPLE_FIELDS if trident else SAMPLE_FIELDS[2:]:
+        samples = json.loads(row[field])
+        if (not isinstance(samples, list) or len(samples) != int(row["repeats"]) * int(row["trials"]) or
+                any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
+                    for value in samples)):
+            raise ValueError("Invalid timing samples: " + field)
+        p90 = sorted(samples)[math.ceil(0.90 * len(samples)) - 1]
+        if not math.isclose(p90, float(row[field.replace("_samples_", "_p90_")]),
+                            rel_tol=1e-12, abs_tol=1e-15):
+            raise ValueError("Timing samples disagree with P90: " + field)
+        arrays[field] = samples
+    for field, samples in arrays.items():
+        outer = arrays["communication_samples_seconds"] if field.startswith(("inter_node", "intra_node")) else arrays["end_to_end_samples_seconds"]
+        if any(inner > total and not math.isclose(inner, total, rel_tol=1e-12, abs_tol=1e-15)
+               for inner, total in zip(samples, outer)):
+            raise ValueError("Phase samples exceed their containing interval: " + field)
+    validate_structure_metrics(row)
+    compute = float(row["compute_p90_seconds"])
+    expected_gflops = 2 * int(row["scalar_products"]) / compute / 1e9 if compute else 0
+    if not math.isclose(float(row["compute_gflops_p90"]), expected_gflops, rel_tol=1e-12, abs_tol=1e-15):
+        raise ValueError("GFLOP/s disagrees with scalar products and compute P90")
+
+
 def normalize(cfg, action, case, variant, nodes, raw_path, headers):
     with raw_path.open(newline="", encoding="utf-8") as stream:
         reader = csv.DictReader(stream, delimiter="\t")
@@ -322,16 +427,7 @@ def normalize(cfg, action, case, variant, nodes, raw_path, headers):
     for key, value in expected.items():
         if row.get(key) != str(value):
             raise ValueError("Unexpected %s: %r, expected %r" % (key, row.get(key), str(value)))
-    required = [key for key in TIMINGS if key not in (
-        ("halo_setup_seconds",) if trident else ("plan_setup_seconds", "inter_node_p90_seconds", "intra_node_p90_seconds"))]
     gflops = "compute_gflops" if trident else "compute_gflops_p90"
-    for key in required + [gflops] + (["max_abs_error"] if validate else []):
-        value = float(row[key])
-        if not math.isfinite(value) or value < 0:
-            raise ValueError("Invalid benchmark metric: " + key)
-    for key in ("a_nnz", "b_nnz", "c_nnz"):
-        if int(row[key]) < 0:
-            raise ValueError("Invalid nonzero count: " + key)
     normalized = {key: row.get(key, "NA") for key in FIELDS}
     normalized.update(matrix_a=a.relative_to(cfg.matrix_dir).as_posix(),
                       matrix_b=b.relative_to(cfg.matrix_dir).as_posix(),
@@ -339,6 +435,7 @@ def normalize(cfg, action, case, variant, nodes, raw_path, headers):
                       cpus_per_rank="NA" if cfg.local_check else str(cfg.cpus_per_rank),
                       topology="logical_test" if cfg.local_check else "physical",
                       compute_gflops_p90=row[gflops])
+    validate_measurements(normalized, trident)
     return normalized
 
 
@@ -386,12 +483,12 @@ def analyze(cfg, action):
         for row in rows:
             if row["benchmark_protocol"] != PROTOCOLS[variant] or row["validation"] not in ("PASS", "SKIPPED"):
                 raise ValueError("Invalid source observation for " + variant)
+            validate_measurements(row, variant.startswith("trident_"))
             derived = {key: row[key] for key in fields if key in row}
             if action == "matrix_structure":
                 derived.update(a_density=str(int(row["a_nnz"]) / (int(row["a_rows"]) * int(row["a_cols"]))),
                                b_density=str(int(row["b_nnz"]) / (int(row["b_rows"]) * int(row["b_cols"]))),
-                               c_density=str(int(row["c_nnz"]) / (int(row["a_rows"]) * int(row["b_cols"]))),
-                               a_mean_nnz_per_row=str(int(row["a_nnz"]) / int(row["a_rows"])))
+                               c_density=str(int(row["c_nnz"]) / (int(row["a_rows"]) * int(row["b_cols"]))))
             output.append(derived)
         tables[variant] = output
     if not any(tables.values()):

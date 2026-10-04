@@ -138,6 +138,10 @@ class MatrixToolsTest(unittest.TestCase):
                                    encoding="ascii")
             with self.assertRaises(ValueError):
                 matrices.inspect_matrix(self.source)
+        self.source.write_text("%%MatrixMarket matrix coordinate real skew-symmetric\n2 2 1\n1 1 3\n",
+                               encoding="ascii")
+        with self.assertRaisesRegex(ValueError, "diagonal must be zero"):
+            matrices.inspect_matrix(self.source)
 
     def test_archive_only_extracts_named_regular_matrix(self):
         archive = self.root / "matrix.tar.gz"

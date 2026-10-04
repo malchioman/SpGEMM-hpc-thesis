@@ -90,6 +90,8 @@ def entries_of(path):
                 raise ValueError("Matrix Market index outside dimensions")
             if not math.isfinite(value):
                 raise ValueError("non-finite matrix value")
+            if header["symmetry"] == "skew-symmetric" and row == col and value != 0:
+                raise ValueError("skew-symmetric diagonal must be zero")
             count += 1
             if count > header["entries"]:
                 raise ValueError("more entries than declared in Matrix Market header")

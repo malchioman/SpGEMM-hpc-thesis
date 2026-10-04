@@ -135,7 +135,8 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
         const double distributionStart = MPI_Wtime();
         const auto a = distributeBlocks(grid.rank == 0 ? &globalA : nullptr, shape[0], shape[1], grid);
         const auto b = distributeBlocks(grid.rank == 0 ? &globalB : nullptr, shape[2], shape[3], grid);
-        const double distributionSeconds = maxElapsed(distributionStart, grid.world);
+        // Defer reporting reductions until the complete first product has finished.
+        const double distributionElapsed = MPI_Wtime() - distributionStart;
 
         checkMpi(MPI_Barrier(grid.world), "MPI_Barrier(setup)", grid.world);
         const double setupStart = MPI_Wtime();
@@ -147,6 +148,17 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
         const double setupEnd = MPI_Wtime();
         auto product = multiply(a, b, plan, *exchange, workspace, *inter);
         const double firstEnd = MPI_Wtime();
+        checkMpi(MPI_Barrier(grid.world), "MPI_Barrier(first gather)", grid.world);
+        const double firstGatherStart = MPI_Wtime();
+        double firstGatherEnd = 0.0;
+        {
+            const auto firstResult = gatherBlocks(product.matrix, shape[0], shape[3], grid);
+            firstGatherEnd = MPI_Wtime();
+            (void)firstResult;  // Release the collected first product before warmup.
+        }
+        const double fullProductSeconds = maxRankValue(firstGatherEnd - distributionStart, grid.world);
+        const double firstGatherSeconds = maxRankValue(firstGatherEnd - firstGatherStart, grid.world);
+        const double distributionSeconds = maxRankValue(distributionElapsed, grid.world);
         const double setupSeconds = maxRankValue(setupEnd - setupStart, grid.world);
         const double firstSeconds = maxRankValue(firstEnd - setupStart, grid.world);
 
@@ -177,6 +189,10 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
         const double gatherStart = MPI_Wtime();
         const auto result = gatherBlocks(product.matrix, shape[0], shape[3], grid);
         const double gatherSeconds = maxElapsed(gatherStart, grid.world);
+        const auto work = grid.rank == 0 ? scalarProductsByRank(globalA, globalB, grid)
+                                         : std::vector<std::int64_t>{};
+        const auto metrics = collectBenchmarkMetrics(globalA, globalB, result, a, b, product.matrix,
+                                                     work, grid.world);
         if (grid.rank == 0) {
             std::optional<double> error;
             if (options.validate) error = maxAbsoluteDifference(result, serialSpgemm(globalA, globalB));
@@ -208,7 +224,15 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
                 {"communication_p90_seconds", number(p90[2])}, {"compute_p90_seconds", number(p90[3])},
                 {"end_to_end_p90_seconds", number(p90[4])}, {"gather_seconds", number(gatherSeconds)},
                 {"compute_gflops", number(p90[3] > 0.0 ? flops / p90[3] / 1.0e9 : 0.0)},
-                {"max_abs_error", error ? number(*error) : "NA"}, {"validation", validation}};
+                {"max_abs_error", error ? number(*error) : "NA"}, {"validation", validation},
+                {"inter_node_samples_seconds", timingSamplesJson(samples[0])},
+                {"intra_node_samples_seconds", timingSamplesJson(samples[1])},
+                {"communication_samples_seconds", timingSamplesJson(samples[2])},
+                {"compute_samples_seconds", timingSamplesJson(samples[3])},
+                {"end_to_end_samples_seconds", timingSamplesJson(samples[4])},
+                {"full_product_seconds", number(fullProductSeconds)},
+                {"first_gather_seconds", number(firstGatherSeconds)}};
+            record.insert(record.end(), metrics.begin(), metrics.end());
             writeRecord(record, options.resultsPath);
             for (const auto& field : record) std::cout << field.first << '=' << field.second << '\n';
             std::cout << "A=" << shape[0] << 'x' << shape[1] << " nnz=" << globalA.values.size() << '\n'
