@@ -82,6 +82,10 @@ def read_json(path):
 def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=RUN_ACTIONS + ANALYSES + ("all",))
+    parser.add_argument("campaign_count", nargs="?", type=int, metavar="N",
+                        help="all only: repeat the complete workflow N times (run_all.sh N)")
+    parser.add_argument("--campaign-repeats", type=int,
+                        help="all only: complete workflow repetitions; alternative to positional N")
     parser.add_argument("--config", type=Path, default=REPO / "scripts/experiments.json")
     for key in ("nodes", "matrices", "pilot-matrices", "permutation-matrices", "variants"):
         parser.add_argument("--" + key, nargs="+", type=int if key == "nodes" else str)
@@ -97,6 +101,10 @@ def options(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="preview without requiring inputs/binaries or writing files")
     parser.add_argument("--local-check", action="store_true", help="logical nodes on localhost; validation on, test-results/local-check by default")
     args = parser.parse_args(argv)
+    if args.campaign_count is not None and args.campaign_repeats is not None:
+        raise ValueError("Use either N or --campaign-repeats, not both")
+    if args.action != "all" and (args.campaign_count is not None or args.campaign_repeats is not None):
+        raise ValueError("Campaign repetitions are only supported by run_all.sh (action all)")
     defaults = read_json(REPO / "scripts/experiments.json")
     config = read_json(args.config)
     unknown = set(config) - set(defaults)
@@ -106,13 +114,17 @@ def options(argv=None):
     for key, value in vars(args).items():
         if value is not None and key in defaults:
             defaults[key] = value
+    if args.campaign_count is not None:
+        defaults["campaign_repeats"] = args.campaign_count
     if args.mpi_arg is not None:
         defaults["mpi_args"] = args.mpi_arg
     cfg = argparse.Namespace(**defaults)
     cfg.action, cfg.dry_run, cfg.local_check = args.action, args.dry_run, args.local_check
-    for key in ("ranks_per_node", "threads", "runs", "repeats", "trials", "chunk"):
+    for key in ("ranks_per_node", "threads", "runs", "repeats", "trials", "chunk", "campaign_repeats"):
         if type(getattr(cfg, key)) is not int or getattr(cfg, key) < 1:
             raise ValueError(key + " must be a positive integer")
+    if cfg.action != "all":
+        cfg.campaign_repeats = 1
     for key in ("warmup", "seed", "timeout"):
         if type(getattr(cfg, key)) is not int or getattr(cfg, key) < 0:
             raise ValueError(key + " must be a nonnegative integer")
@@ -499,24 +511,37 @@ def analyze(cfg, action):
         print("%s: %d observations -> %s" % (action, len(rows), destination), flush=True)
 
 
+def run_workflow(cfg, actions, work, headers):
+    for repetition in range(cfg.campaign_repeats):
+        if cfg.campaign_repeats > 1:
+            print("Workflow repetition %d/%d" % (repetition + 1, cfg.campaign_repeats), flush=True)
+        for action in actions:
+            if action in RUN_ACTIONS:
+                run_experiment(cfg, action, work[action], headers)
+            elif cfg.dry_run:
+                print(action + ": regenerate per-implementation TSVs from recorded observations (no MPI launch)")
+            else:
+                analyze(cfg, action)
+
+
 def main(argv=None):
     cfg = options(argv)
     actions = RUN_ACTIONS + ANALYSES if cfg.action == "all" else (cfg.action,)
     work = [(action, cases(cfg, action)) for action in actions if action in RUN_ACTIONS]
     count = sum(len(items) * len(cfg.nodes) * len(cfg.variants) * sampling(cfg, action)[0]
                 for action, items in work)
+    count *= cfg.campaign_repeats
     display_root = output_root(cfg, cfg.action) if cfg.action != "all" else cfg.results_dir
     print("%d MPI launches; results: %s" % (count, display_root), flush=True)
+    if cfg.campaign_repeats > 1:
+        print("%d complete workflow repetitions; %d MPI launches per measurement case/configuration/implementation "
+              "in each repetition (pilot: 1)." % (cfg.campaign_repeats, cfg.runs), flush=True)
     if "pilot" in actions and len(actions) > 1:
         print("Pilot checks: %s" % (output_root(cfg, "pilot") / "pilot"), flush=True)
     if cfg.local_check:
         print("LOCAL CHECK: logical nodes, no rank binding; excluded from cluster performance results.", flush=True)
     if cfg.dry_run:
-        for action, action_cases in work:
-            run_experiment(cfg, action, action_cases, {})
-        for action in actions:
-            if action in ANALYSES:
-                print(action + ": regenerate per-implementation TSVs from recorded observations (no MPI launch)")
+        run_workflow(cfg, actions, dict(work), {})
         return 0
     if work:
         if not shutil.which(cfg.mpi_launcher):
@@ -541,11 +566,7 @@ def main(argv=None):
         for action, _ in work:
             for variant in cfg.variants:
                 read_table(output_root(cfg, action) / action / (variant + ".tsv"), FIELDS)
-        for action in actions:
-            if action in RUN_ACTIONS:
-                run_experiment(cfg, action, dict(work)[action], headers)
-            else:
-                analyze(cfg, action)
+        run_workflow(cfg, actions, dict(work), headers)
     return 0
 
 

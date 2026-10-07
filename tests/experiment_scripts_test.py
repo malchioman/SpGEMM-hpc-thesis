@@ -54,7 +54,7 @@ class CampaignTest(unittest.TestCase):
 
     def run_action(self, action, *args):
         with contextlib.redirect_stdout(io.StringIO()):
-            return runner.main([action, "--config", str(self.config)] + list(args))
+            return runner.main([action] + list(args) + ["--config", str(self.config)])
 
     def rows(self, action, variant="trident_get", root=None):
         with ((root or self.results) / action / (variant + ".tsv")).open(newline="", encoding="utf-8") as stream:
@@ -134,9 +134,62 @@ class CampaignTest(unittest.TestCase):
                     self.assertFalse((self.results / action / "trident_get.tsv").exists())
                 path.write_bytes(original)
 
+    def test_complete_workflow_repetitions_match_separate_invocations(self):
+        variant = "trident_get"
+        reference = self.root / "separate"
+        for _ in range(2):
+            self.run_action("all", "--variants", variant, "--results-dir", str(reference))
+        expected = {action: self.rows(action, root=reference)
+                    for action in runner.RUN_ACTIONS + runner.ANALYSES}
+        cycle = ["pilot"] * 3 + ["strong_scaling"] * 2 + ["permutation"] * 2 + ["rectangular"] * 2
+        for count_args in (("2",), ("--campaign-repeats", "2")):
+            with self.subTest(count_args=count_args):
+                root = self.root / ("positional" if len(count_args) == 1 else "flag")
+                before = len(self.launches())
+                self.run_action("all", *count_args, "--variants", variant, "--results-dir", str(root))
+                launches = self.launches()[before:]
+                self.assertEqual([cmd[cmd.index("--experiment") + 1] for cmd in launches], cycle * 2)
+                self.assertEqual({action: self.rows(action, root=root) for action in expected}, expected)
+                self.assertEqual(len(list(root.rglob("*.tsv"))), 6)
+                self.assertFalse((root / ".experiments.lock").exists())
+
+    def test_failure_stops_remaining_workflow_repetitions(self):
+        original_analyze = runner.analyze
+
+        def fail_next_launch(cfg, action):
+            original_analyze(cfg, action)
+            if action == "matrix_structure":
+                os.environ["MOCK_FAILURE"] = "exit"
+
+        with patch.dict(os.environ), patch.object(runner, "analyze", side_effect=fail_next_launch):
+            with self.assertRaisesRegex(RuntimeError, "no observation appended"):
+                self.run_action("all", "3", "--runs", "1", "--variants", "trident_get")
+        # The first workflow completes; the next pilot launch fails. No third workflow runs.
+        self.assertEqual(len(self.launches()), 7)
+        self.assertEqual(len(self.rows("pilot")), 3)
+        for action in ("strong_scaling", "permutation", "rectangular", "matrix_structure"):
+            self.assertEqual(len(self.rows(action)), 1)
+        self.assertEqual(len(self.rows("phase_analysis")), 3)
+        self.assertFalse((self.results / ".experiments.lock").exists())
+
+    def test_invalid_campaign_repetitions_are_rejected(self):
+        for args in (("all", "0"), ("all", "-2"), ("all", "--campaign-repeats", "0"),
+                     ("all", "2", "--campaign-repeats", "3"),
+                     ("strong_scaling", "2"), ("pilot", "--campaign-repeats", "2")):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                runner.options(list(args))
+        for count in ("1.5", "five"):
+            with self.subTest(count=count), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    runner.options(["all", count])
+                self.assertEqual(failure.exception.code, 2)
+        self.assertFalse(self.launch_log.exists())
+        self.assertFalse(self.results.exists())
+
     def test_sbatchman_jobs_match_run_all_tables_and_append(self):
         args = ["all", "--config", str(self.config), "--nodes", "1", "4",
-                "--variants", "spgemm_two_sided", "trident_get"]
+                "--variants", "spgemm_two_sided", "trident_get",
+                "--campaign-repeats", "2", "--runs", "1"]
         with contextlib.redirect_stdout(io.StringIO()):
             runner.main(args)
 
@@ -245,6 +298,27 @@ class CampaignTest(unittest.TestCase):
     def test_result_lock_prevents_overlapping_writers(self):
         with runner.result_lock(self.results), self.assertRaisesRegex(ValueError, "Another campaign"):
             self.run_action("strong_scaling", "--variants", "trident_get")
+        self.assertFalse(self.launch_log.exists())
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Linux/WSL shell entrypoints")
+    def test_run_all_shell_repetitions_preview(self):
+        shutil.rmtree(self.data)
+        shutil.rmtree(self.build)
+        for count_args in (["5"], ["--campaign-repeats", "5"]):
+            with self.subTest(count_args=count_args):
+                result = subprocess.run([
+                    "bash", str(REPO / "scripts/run_all.sh"), *count_args,
+                    "--config", str(self.config), "--runs", "1", "--variants", "trident_get",
+                    "--dry-run", "--mpi-launcher", "nonexistent-mpirun",
+                ], cwd=self.root, env=dict(os.environ, PYTHON=sys.executable),
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("30 MPI launches", result.stdout)
+                self.assertEqual(result.stdout.count("Workflow repetition "), 5)
+                self.assertIn("Workflow repetition 5/5", result.stdout)
+                for action in runner.ANALYSES:
+                    self.assertEqual(result.stdout.count(action + ": regenerate"), 5)
+        self.assertFalse(self.results.exists())
         self.assertFalse(self.launch_log.exists())
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Linux/WSL shell entrypoints")

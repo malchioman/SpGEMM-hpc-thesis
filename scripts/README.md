@@ -38,6 +38,11 @@ bash scripts/run_all.sh --dry-run
 
 # Inside an appropriate cluster allocation, after setting experiments.json:
 bash scripts/run_all.sh
+
+# Repeat the entire workflow five times:
+bash scripts/run_all.sh 5
+# Equivalent named option:
+bash scripts/run_all.sh --campaign-repeats 5
 ```
 
 `run_all.sh` does not download inputs, build executables or request a scheduler
@@ -88,6 +93,7 @@ bash scripts/run_all.sh --help
 | `threads` | `4` | OpenMP compute threads per rank |
 | `cpus_per_rank` | `null` | Defaults to `threads + 1` for **all** variants, including room for Hybrid's worker |
 | `runs` | `3` | Independent MPI launches per input pair, resource configuration and implementation |
+| `campaign_repeats` | `1` | Complete workflow repetitions for `run_all.sh`; ignored by individual-stage scripts |
 | `warmup`, `repeats`, `trials` | `2`, `10`, `5` | Within each launch: warmup and product sampling; not independent process launches |
 | `schedule`, `chunk` | `guided`, `64` | Same OpenMP settings across variants |
 | `validate` | `false` | Main campaigns skip the serial reference; use `--validate` to enable it |
@@ -106,6 +112,27 @@ per input pair, resource configuration and implementation; each observation
 summarizes 50 timed products as P90 values. The 50 products share the same MPI
 processes and are not 50 independent launches. A later rerun appends more rows;
 there is no resume or deduplication.
+
+`bash scripts/run_all.sh 5` repeats the entire six-stage workflow five times,
+including the pilot and both analysis exports, just like five separate invocations.
+Put the optional number before other arguments, or use `--campaign-repeats 5`.
+The number must be a positive integer; do not supply both forms. Without either
+option, `campaign_repeats` comes from the configuration (default: one workflow).
+All other settings are preserved. In particular, the default `runs=3` means five
+workflows append **15 observations** per measurement case, resource configuration
+and implementation. To collect five observations with one launch per workflow:
+
+```bash
+bash scripts/run_all.sh 5 --runs 1
+# Preview all five workflows without launching or writing results:
+bash scripts/run_all.sh 5 --runs 1 --dry-run
+```
+
+Each pilot case runs once per workflow. Measurements append to the usual TSVs,
+and analyses regenerate their tables from all recorded observations; filenames
+and result directories do not change. The runner holds the result locks throughout
+all repetitions, stops on the first error and retains completed observations.
+Scheduler job snapshots also preserve `campaign_repeats`.
 
 `--timeout` on experiment scripts limits each complete MPI launch, including
 input loading, setup, all products, gathering and any serial validation. It is

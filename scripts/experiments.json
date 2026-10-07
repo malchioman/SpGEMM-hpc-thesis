@@ -4,6 +4,7 @@
   "threads": 4,
   "cpus_per_rank": null,
   "runs": 3,
+  "campaign_repeats": 1,
   "warmup": 2,
   "repeats": 10,
   "trials": 5,

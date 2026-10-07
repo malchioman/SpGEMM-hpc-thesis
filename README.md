@@ -405,6 +405,9 @@ After building, preparing the selected inputs, and obtaining a suitable allocati
 
 ```bash
 bash scripts/run_all.sh
+
+# Repeat the whole workflow five times, with one MPI launch per measurement case:
+bash scripts/run_all.sh 5 --runs 1
 ```
 
 `run_all.sh` uses an existing allocation; it does not build, download matrices or
