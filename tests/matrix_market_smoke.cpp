@@ -10,7 +10,7 @@ int main(int argc, char** argv) {
 
     const CsrMatrix matrix = readMatrixMarket(argv[1]);
     if (matrix.rows != 3 || matrix.cols != 3 || matrix.values.size() != 6 ||
-        matrix.rowPtr != std::vector<int>({0, 2, 4, 6})) {
+        matrix.rowPtr != std::vector<CsrOffset>({0, 2, 4, 6})) {
         std::cerr << "unexpected CSR conversion\n";
         return 1;
     }

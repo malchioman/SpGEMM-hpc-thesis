@@ -70,7 +70,7 @@ CsrMatrix sparseInput(int rows, int cols, int salt) {
                 }
             }
         }
-        result.rowPtr.push_back(static_cast<int>(result.values.size()));
+        result.rowPtr.push_back(checkedCsrCount(result.values.size()));
     }
     return result;
 }
@@ -78,7 +78,7 @@ CsrMatrix sparseInput(int rows, int cols, int salt) {
 std::vector<double> dense(const CsrMatrix& matrix) {
     std::vector<double> result(static_cast<std::size_t>(matrix.rows) * matrix.cols, 0.0);
     for (int i = 0; i < matrix.rows; ++i) {
-        for (int p = matrix.rowPtr[i]; p < matrix.rowPtr[i + 1]; ++p) {
+        for (CsrOffset p = matrix.rowPtr[i]; p < matrix.rowPtr[i + 1]; ++p) {
             result[static_cast<std::size_t>(i) * matrix.cols + matrix.columnIndices[p]] += matrix.values[p];
         }
     }
@@ -89,13 +89,13 @@ void checkProduct(const CsrMatrix& a, const CsrMatrix& b, const CsrMatrix& actua
     if (actual.rows != a.rows || actual.cols != b.cols || actual.rowPtr.size() != static_cast<std::size_t>(a.rows) + 1) {
         throw std::runtime_error("wrong result dimensions");
     }
-    if (actual.rowPtr.front() != 0 || actual.rowPtr.back() != static_cast<int>(actual.values.size()) ||
+    if (actual.rowPtr.front() != 0 || actual.rowPtr.back() != checkedCsrCount(actual.values.size()) ||
         actual.columnIndices.size() != actual.values.size()) {
         throw std::runtime_error("invalid result CSR");
     }
     for (int i = 0; i < actual.rows; ++i) {
         int previous = -1;
-        for (int p = actual.rowPtr[i]; p < actual.rowPtr[i + 1]; ++p) {
+        for (CsrOffset p = actual.rowPtr[i]; p < actual.rowPtr[i + 1]; ++p) {
             if (actual.columnIndices[p] <= previous || actual.columnIndices[p] >= actual.cols || actual.values[p] == 0.0) {
                 throw std::runtime_error("result contains unsorted/duplicate columns or stored zeros");
             }
@@ -204,7 +204,8 @@ int main(int argc, char** argv) {
             // Payloads exceed common eager thresholds, exercising matched rendezvous transfers.
             runCase(sparseInput(385, 389, 1), sparseInput(389, 383, 2), grid);
         }
-        for (const auto shape : {std::array<int, 3>{7, 9, 5}, {1, 1, 1}, {0, 3, 2}, {3, 0, 4}, {3, 4, 0}, {19, 11, 13}}) {
+        for (const auto& shape : std::array<std::array<int, 3>, 6>{{
+                 {7, 9, 5}, {1, 1, 1}, {0, 3, 2}, {3, 0, 4}, {3, 4, 0}, {19, 11, 13}}}) {
             runCase(sparseInput(shape[0], shape[1], 1), sparseInput(shape[1], shape[2], 2), grid);
         }
         runCase({2, 2, {0, 2, 4}, {0, 1, 0, 1}, {1, 1, 1, -1}},

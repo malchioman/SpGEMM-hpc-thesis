@@ -9,7 +9,7 @@ namespace trident {
 struct TileShape {
     int rows = 0;
     int cols = 0;
-    int nnz = 0;
+    CsrOffset nnz = 0;
 };
 
 struct Stage {
@@ -23,8 +23,8 @@ struct Stage {
     TileShape panel;
     std::vector<int> rowCounts;
     std::vector<int> rowOffsets;
-    std::vector<int> nnzCounts;
-    std::vector<int> nnzOffsets;
+    std::vector<CsrOffset> nnzCounts;
+    std::vector<CsrOffset> nnzOffsets;
 };
 
 struct ExecutionPlan {

@@ -66,7 +66,7 @@ CsrMatrix readMatrixMarket(const std::string& path) {
 
     int rows = 0;
     int cols = 0;
-    int entries = 0;
+    CsrOffset entries = 0;
     {
         std::istringstream dimensions(line);
         if (!(dimensions >> rows >> cols >> entries) || rows <= 0 || cols <= 0 || entries < 0 || (dimensions >> extra)) {
@@ -86,8 +86,8 @@ CsrMatrix readMatrixMarket(const std::string& path) {
         double value;
     };
     std::vector<Entry> entriesList;
-    entriesList.reserve(static_cast<std::size_t>(entries) * (mirrored ? 2U : 1U));
-    for (int entry = 0; entry < entries; ++entry) {
+    entriesList.reserve(csrSize<Entry>(mirrored ? checkedCsrAdd(entries, entries, "Matrix Market reserve") : entries));
+    for (CsrOffset entry = 0; entry < entries; ++entry) {
         do {
             if (!std::getline(input, line)) {
                 throw std::runtime_error("unexpected end of Matrix Market entries: " + path);
@@ -112,7 +112,7 @@ CsrMatrix readMatrixMarket(const std::string& path) {
         if (symmetry == "skew-symmetric" && row == column && value != 0.0) {
             throw std::runtime_error("skew-symmetric diagonal must be zero: " + path);
         }
-        checkedCsrCount(entriesList.size() + (mirrored && row != column ? 2U : 1U));
+        checkedCsrAdd(checkedCsrCount(entriesList.size()), mirrored && row != column ? 2 : 1, "Matrix Market entries");
         entriesList.push_back({row, column, value});
         if (mirrored && row != column) {
             entriesList.push_back({column, row, symmetry == "skew-symmetric" ? -value : value});
@@ -131,13 +131,13 @@ CsrMatrix readMatrixMarket(const std::string& path) {
         ++matrix.rowPtr[entry.row + 1];
     }
     for (int row = 0; row < rows; ++row) {
-        matrix.rowPtr[row + 1] += matrix.rowPtr[row];
+        matrix.rowPtr[row + 1] = checkedCsrAdd(matrix.rowPtr[row + 1], matrix.rowPtr[row], "Matrix Market prefix");
     }
     matrix.columnIndices.resize(entriesList.size());
     matrix.values.resize(entriesList.size());
-    std::vector<int> cursor = matrix.rowPtr;
+    std::vector<CsrOffset> cursor = matrix.rowPtr;
     for (const Entry& entry : entriesList) {
-        const int position = cursor[entry.row]++;
+        const CsrOffset position = cursor[entry.row]++;
         matrix.columnIndices[position] = entry.column;
         matrix.values[position] = entry.value;
     }

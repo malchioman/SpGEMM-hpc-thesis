@@ -117,10 +117,10 @@ void appendCsrBlock(CsrMatrix& globalResult, const CsrMatrix& localResult, RowBl
     }
 
     for (int row = 0; row < localResult.rows; ++row) {
-        const int first = localResult.rowPtr[row];
-        const int last = localResult.rowPtr[row + 1];
-        globalResult.rowPtr[block.firstRow + row + 1] = checkedCsrCount(
-            static_cast<std::size_t>(globalResult.rowPtr[block.firstRow + row]) + (last - first));
+        const CsrOffset first = localResult.rowPtr[row];
+        const CsrOffset last = localResult.rowPtr[row + 1];
+        globalResult.rowPtr[block.firstRow + row + 1] = checkedCsrAdd(
+            globalResult.rowPtr[block.firstRow + row], last - first, "global result prefix");
         globalResult.columnIndices.insert(globalResult.columnIndices.end(),
                                           localResult.columnIndices.begin() + first,
                                           localResult.columnIndices.begin() + last);
@@ -143,13 +143,13 @@ CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& m
         accumulator.clear();
         touchedColumns.clear();
 
-        for (int aEntry = matrixA.rowPtr[row]; aEntry < matrixA.rowPtr[row + 1]; ++aEntry) {
+        for (CsrOffset aEntry = matrixA.rowPtr[row]; aEntry < matrixA.rowPtr[row + 1]; ++aEntry) {
             const int bRow = matrixA.columnIndices[aEntry];
             if (bRow < 0 || bRow >= matrixB.rows) {
                 throw std::runtime_error("A contains a column index outside B's row range");
             }
             const double aValue = matrixA.values[aEntry];
-            for (int bEntry = matrixB.rowPtr[bRow]; bEntry < matrixB.rowPtr[bRow + 1]; ++bEntry) {
+            for (CsrOffset bEntry = matrixB.rowPtr[bRow]; bEntry < matrixB.rowPtr[bRow + 1]; ++bEntry) {
                 const int column = matrixB.columnIndices[bEntry];
                 const double product = aValue * matrixB.values[bEntry];
                 const auto [position, inserted] = accumulator.emplace(column, product);
@@ -325,18 +325,18 @@ CsrMatrix makeBandedMatrix(int rows, int cols, int nonZerosPerRow) {
     matrix.cols = cols;
     const auto count = checkedCsrCount(static_cast<std::size_t>(rows) * nonZerosPerRow);
     matrix.rowPtr.resize(static_cast<std::size_t>(rows) + 1);
-    matrix.columnIndices.reserve(count);
-    matrix.values.reserve(count);
+    matrix.columnIndices.reserve(csrSize<int>(count));
+    matrix.values.reserve(csrSize<double>(count));
 
     for (int row = 0; row < rows; ++row) {
-        matrix.rowPtr[row] = static_cast<int>(matrix.values.size());
+        matrix.rowPtr[row] = checkedCsrCount(matrix.values.size());
         for (int entry = 0; entry < nonZerosPerRow; ++entry) {
             const int column = static_cast<int>((static_cast<std::int64_t>(row) * 17 + entry) % cols);
             matrix.columnIndices.push_back(column);
             matrix.values.push_back(1.0 / static_cast<double>(1 + ((static_cast<std::int64_t>(row) + entry) % 13)));
         }
     }
-    matrix.rowPtr[rows] = static_cast<int>(matrix.values.size());
+    matrix.rowPtr[rows] = checkedCsrCount(matrix.values.size());
     return matrix;
 }
 
@@ -345,12 +345,12 @@ CsrMatrix sliceRows(const CsrMatrix& matrix, RowBlock block) {
     slice.rows = block.rows;
     slice.cols = matrix.cols;
     slice.rowPtr.resize(static_cast<std::size_t>(block.rows) + 1);
-    const int firstEntry = matrix.rowPtr[block.firstRow];
-    const int lastEntry = matrix.rowPtr[block.firstRow + block.rows];
+    const CsrOffset firstEntry = matrix.rowPtr[block.firstRow];
+    const CsrOffset lastEntry = matrix.rowPtr[block.firstRow + block.rows];
     slice.columnIndices.assign(matrix.columnIndices.begin() + firstEntry,
                                matrix.columnIndices.begin() + lastEntry);
     slice.values.assign(matrix.values.begin() + firstEntry, matrix.values.begin() + lastEntry);
-    for (int row = 0; row <= block.rows; ++row) {
+    for (std::size_t row = 0; row <= static_cast<std::size_t>(block.rows); ++row) {
         slice.rowPtr[row] = matrix.rowPtr[block.firstRow + row] - firstEntry;
     }
     return slice;
@@ -360,7 +360,7 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
                            int rank, int ranks, MPI_Comm communicator) {
     if (rank == 0) {
         std::vector<CsrMatrix> slices;
-        std::vector<std::array<int, 3>> headers(ranks);
+        std::vector<std::array<CsrOffset, 3>> headers(ranks);
         std::vector<MPI_Request> requests;
         slices.reserve(ranks);
         requests.reserve(4 * (ranks - 1));
@@ -371,56 +371,36 @@ CsrMatrix distributeMatrix(const CsrMatrix* globalMatrix, const std::vector<RowB
                                checkedCsrCount(slices.back().values.size())};
         }
         for (int target = 1; target < ranks; ++target) {
-            MPI_Request request = MPI_REQUEST_NULL;
-            checkMpi(MPI_Isend(headers[target].data(), 3, MPI_INT, target, kHeaderTag, communicator,
-                               &request),
-                     "MPI_Isend(matrix header)", communicator);
-            requests.push_back(request);
-            checkMpi(MPI_Isend(slices[target].rowPtr.data(), checkedCsrCount(slices[target].rowPtr.size()), MPI_INT,
-                               target, kRowPtrTag, communicator, &request),
-                     "MPI_Isend(row pointers)", communicator);
-            requests.push_back(request);
-            checkMpi(MPI_Isend(slices[target].columnIndices.data(), headers[target][2], MPI_INT,
-                               target, kColumnTag, communicator, &request),
-                     "MPI_Isend(column indices)", communicator);
-            requests.push_back(request);
-            checkMpi(MPI_Isend(slices[target].values.data(), headers[target][2], MPI_DOUBLE, target,
-                               kValueTag, communicator, &request),
-                     "MPI_Isend(values)", communicator);
-            requests.push_back(request);
+            csrIsend(headers[target].data(), 3, target, kHeaderTag, communicator, requests);
+            csrIsend(slices[target].rowPtr.data(), checkedCsrCount(slices[target].rowPtr.size()), target, kRowPtrTag, communicator, requests);
+            csrIsend(slices[target].columnIndices.data(), headers[target][2], target, kColumnTag, communicator, requests);
+            csrIsend(slices[target].values.data(), headers[target][2], target, kValueTag, communicator, requests);
         }
         waitAll(requests, communicator);
         return std::move(slices.front());
     }
 
-    std::array<int, 3> header{};
-    checkMpi(MPI_Recv(header.data(), 3, MPI_INT, 0, kHeaderTag, communicator, MPI_STATUS_IGNORE),
-             "MPI_Recv(matrix header)", communicator);
+    std::array<CsrOffset, 3> header{};
+    csrRecv(header.data(), 3, 0, kHeaderTag, communicator);
     CsrMatrix localMatrix;
-    localMatrix.rows = header[0];
-    localMatrix.cols = header[1];
+    localMatrix.rows = checkedMatrixDimension(header[0]);
+    localMatrix.cols = checkedMatrixDimension(header[1]);
     localMatrix.rowPtr.resize(static_cast<std::size_t>(localMatrix.rows) + 1);
-    localMatrix.columnIndices.resize(header[2]);
-    localMatrix.values.resize(header[2]);
-    std::vector<MPI_Request> requests(3, MPI_REQUEST_NULL);
-    checkMpi(MPI_Irecv(dataOrNull(localMatrix.rowPtr), checkedCsrCount(localMatrix.rowPtr.size()), MPI_INT, 0,
-                       kRowPtrTag, communicator, &requests[0]),
-             "MPI_Irecv(row pointers)", communicator);
-    checkMpi(MPI_Irecv(dataOrNull(localMatrix.columnIndices), header[2], MPI_INT, 0, kColumnTag,
-                       communicator, &requests[1]),
-             "MPI_Irecv(column indices)", communicator);
-    checkMpi(MPI_Irecv(dataOrNull(localMatrix.values), header[2], MPI_DOUBLE, 0, kValueTag,
-                       communicator, &requests[2]),
-             "MPI_Irecv(values)", communicator);
+    localMatrix.columnIndices.resize(csrSize<int>(header[2]));
+    localMatrix.values.resize(csrSize<double>(header[2]));
+    std::vector<MPI_Request> requests;
+    csrIrecv(dataOrNull(localMatrix.rowPtr), checkedCsrCount(localMatrix.rowPtr.size()), 0, kRowPtrTag, communicator, requests);
+    csrIrecv(dataOrNull(localMatrix.columnIndices), header[2], 0, kColumnTag, communicator, requests);
+    csrIrecv(dataOrNull(localMatrix.values), header[2], 0, kValueTag, communicator, requests);
     waitAll(requests, communicator);
     return localMatrix;
 }
 
 void waitAll(std::vector<MPI_Request>& requests, MPI_Comm communicator) {
-    if (!requests.empty()) {
-        checkMpi(MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE),
+    forMpiChunks(checkedCsrCount(requests.size()), [&](CsrOffset offset, int count) {
+        checkMpi(MPI_Waitall(count, requests.data() + offset, MPI_STATUSES_IGNORE),
                  "MPI_Waitall", communicator);
-    }
+    });
 }
 
 CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlock>& blocks,
@@ -434,45 +414,30 @@ CsrMatrix gatherCsrMatrix(const CsrMatrix& localResult, const std::vector<RowBlo
         appendCsrBlock(globalResult, localResult, blocks[0], resultCols);
 
         for (int peer = 1; peer < ranks; ++peer) {
-            std::array<int, 3> header{};
-            checkMpi(MPI_Recv(header.data(), 3, MPI_INT, peer, kResultHeaderTag, communicator,
-                              MPI_STATUS_IGNORE),
-                     "MPI_Recv(result header)", communicator);
+            std::array<CsrOffset, 3> header{};
+            csrRecv(header.data(), 3, peer, kResultHeaderTag, communicator);
 
             CsrMatrix peerResult;
-            peerResult.rows = header[0];
-            peerResult.cols = header[1];
+            peerResult.rows = checkedMatrixDimension(header[0]);
+            peerResult.cols = checkedMatrixDimension(header[1]);
             peerResult.rowPtr.resize(static_cast<std::size_t>(peerResult.rows) + 1);
-            peerResult.columnIndices.resize(header[2]);
-            peerResult.values.resize(header[2]);
+            peerResult.columnIndices.resize(csrSize<int>(header[2]));
+            peerResult.values.resize(csrSize<double>(header[2]));
 
-            checkMpi(MPI_Recv(dataOrNull(peerResult.rowPtr), checkedCsrCount(peerResult.rowPtr.size()), MPI_INT, peer,
-                              kResultRowPtrTag, communicator, MPI_STATUS_IGNORE),
-                     "MPI_Recv(result row pointers)", communicator);
-            checkMpi(MPI_Recv(dataOrNull(peerResult.columnIndices), header[2], MPI_INT, peer,
-                              kResultColumnTag, communicator, MPI_STATUS_IGNORE),
-                     "MPI_Recv(result column indices)", communicator);
-            checkMpi(MPI_Recv(dataOrNull(peerResult.values), header[2], MPI_DOUBLE, peer,
-                              kResultValueTag, communicator, MPI_STATUS_IGNORE),
-                     "MPI_Recv(result values)", communicator);
+            csrRecv(dataOrNull(peerResult.rowPtr), checkedCsrCount(peerResult.rowPtr.size()), peer, kResultRowPtrTag, communicator);
+            csrRecv(dataOrNull(peerResult.columnIndices), header[2], peer, kResultColumnTag, communicator);
+            csrRecv(dataOrNull(peerResult.values), header[2], peer, kResultValueTag, communicator);
             appendCsrBlock(globalResult, peerResult, blocks[peer], resultCols);
         }
         return globalResult;
     }
 
-    const std::array<int, 3> header = {localResult.rows, localResult.cols,
+    const std::array<CsrOffset, 3> header = {localResult.rows, localResult.cols,
                                        checkedCsrCount(localResult.values.size())};
-    checkMpi(MPI_Send(header.data(), 3, MPI_INT, 0, kResultHeaderTag, communicator),
-             "MPI_Send(result header)", communicator);
-    checkMpi(MPI_Send(dataOrNull(localResult.rowPtr), checkedCsrCount(localResult.rowPtr.size()), MPI_INT, 0,
-                      kResultRowPtrTag, communicator),
-             "MPI_Send(result row pointers)", communicator);
-    checkMpi(MPI_Send(dataOrNull(localResult.columnIndices), header[2], MPI_INT, 0,
-                      kResultColumnTag, communicator),
-             "MPI_Send(result column indices)", communicator);
-    checkMpi(MPI_Send(dataOrNull(localResult.values), header[2], MPI_DOUBLE, 0, kResultValueTag,
-                      communicator),
-             "MPI_Send(result values)", communicator);
+    csrSend(header.data(), 3, 0, kResultHeaderTag, communicator);
+    csrSend(dataOrNull(localResult.rowPtr), checkedCsrCount(localResult.rowPtr.size()), 0, kResultRowPtrTag, communicator);
+    csrSend(dataOrNull(localResult.columnIndices), header[2], 0, kResultColumnTag, communicator);
+    csrSend(dataOrNull(localResult.values), header[2], 0, kResultValueTag, communicator);
     return {};
 }
 
@@ -484,12 +449,12 @@ std::int64_t scalarMultiplicationCount(const CsrMatrix& matrixA, const CsrMatrix
     validateMultiplicationDimensions(matrixA, matrixB);
     std::int64_t count = 0;
     for (int row = 0; row < matrixA.rows; ++row) {
-        for (int entry = matrixA.rowPtr[row]; entry < matrixA.rowPtr[row + 1]; ++entry) {
+        for (CsrOffset entry = matrixA.rowPtr[row]; entry < matrixA.rowPtr[row + 1]; ++entry) {
             const int bRow = matrixA.columnIndices[entry];
             if (bRow < 0 || bRow >= matrixB.rows) {
                 throw std::runtime_error("A contains a column index outside B's row range");
             }
-            count += matrixB.rowPtr[bRow + 1] - matrixB.rowPtr[bRow];
+            count = checkedCsrAdd(count, matrixB.rowPtr[bRow + 1] - matrixB.rowPtr[bRow], "scalar products");
         }
     }
     return count;
@@ -508,10 +473,10 @@ double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs) {
 
     double maximum = 0.0;
     for (int row = 0; row < lhs.rows; ++row) {
-        int left = lhs.rowPtr[row];
-        int right = rhs.rowPtr[row];
-        const int leftEnd = lhs.rowPtr[row + 1];
-        const int rightEnd = rhs.rowPtr[row + 1];
+        CsrOffset left = lhs.rowPtr[row];
+        CsrOffset right = rhs.rowPtr[row];
+        const CsrOffset leftEnd = lhs.rowPtr[row + 1];
+        const CsrOffset rightEnd = rhs.rowPtr[row + 1];
 
         while (left < leftEnd || right < rightEnd) {
             double difference = 0.0;
@@ -648,7 +613,7 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
     } else {
         output << "NA";
     }
-    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_v2\t"
+    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_csr64_v3\t"
            << timingSamplesJson(communicationSamples) << '\t'
            << timingSamplesJson(computeSamples) << '\t'
            << timingSamplesJson(endToEndSamples) << '\t'
@@ -669,7 +634,7 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
                            std::optional<double> maxAbsoluteError,
                            double fullProductSeconds, double firstGatherSeconds) {
     std::cout << std::fixed << std::setprecision(6) << "implementation=" << implementation << '\n'
-              << "benchmark_protocol=prepared_halo_v2\n"
+              << "benchmark_protocol=prepared_halo_csr64_v3\n"
               << "ranks=" << ranks << " threads_per_rank=" << options.threads
               << " omp_schedule=" << options.schedule << " omp_chunk=" << options.chunk << '\n'
               << "experiment=" << options.experiment << " warmup=" << options.warmup

@@ -61,62 +61,56 @@ void unlockAndFree(MPI_Win& window, bool locked, MPI_Comm communicator) {
     checkMpi(MPI_Win_free(&window), "MPI_Win_free", communicator);
 }
 
-std::vector<int> prepareRemoteSparseRows(const std::vector<RowBlock>& bBlocks, MPI_Win rowPtrWindow,
+std::vector<CsrOffset> prepareRemoteSparseRows(const std::vector<RowBlock>& bBlocks, MPI_Win rowPtrWindow,
                                        RemoteSparseRows& remoteRows, MPI_Comm communicator) {
-    std::vector<int> rowBounds(remoteRows.plan.flatRows.size() * 2U, 0);
-    for (int peer = 0; peer < static_cast<int>(bBlocks.size()); ++peer) {
+    std::vector<CsrOffset> rowBounds(remoteRows.plan.flatRows.size() * 2U, 0);
+    for (int peer = 0; peer < checkedMatrixDimension(checkedCsrCount(bBlocks.size())); ++peer) {
         const int peerOffset = remoteRows.plan.peerOffsets[peer];
         const auto& rows = remoteRows.plan.rowsByPeer[peer];
-        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+        for (int index = 0; index < checkedMatrixDimension(checkedCsrCount(rows.size())); ++index) {
             const int globalRow = rows[index];
             const int localRow = globalRow - bBlocks[peer].firstRow;
             const int slot = peerOffset + index;
-            checkMpi(MPI_Get(rowBounds.data() + static_cast<std::size_t>(2 * slot), 2, MPI_INT,
-                             peer, static_cast<MPI_Aint>(localRow), 2, MPI_INT, rowPtrWindow),
-                     "MPI_Get(B row bounds)", communicator);
+            csrGet(rowBounds.data() + (2 * static_cast<std::size_t>(slot)), 2, peer, localRow, rowPtrWindow, communicator);
         }
     }
     checkMpi(MPI_Win_flush_all(rowPtrWindow), "MPI_Win_flush_all(rowPtr)", communicator);
 
-    int totalRemoteNonZeros = 0;
+    CsrOffset totalRemoteNonZeros = 0;
     remoteRows.rowPtr.assign(remoteRows.plan.flatRows.size() + 1, 0);
-    for (int slot = 0; slot < static_cast<int>(remoteRows.plan.flatRows.size()); ++slot) {
-        const int first = rowBounds[static_cast<std::size_t>(2 * slot)];
-        const int last = rowBounds[static_cast<std::size_t>(2 * slot + 1)];
+    for (int slot = 0; slot < checkedMatrixDimension(checkedCsrCount(remoteRows.plan.flatRows.size())); ++slot) {
+        const CsrOffset first = rowBounds[(2 * static_cast<std::size_t>(slot))];
+        const CsrOffset last = rowBounds[(2 * static_cast<std::size_t>(slot) + 1)];
         if (first < 0 || last < first) {
             fail("received invalid CSR row bounds from a remote B row", communicator);
         }
         remoteRows.rowPtr[slot] = totalRemoteNonZeros;
-        totalRemoteNonZeros += last - first;
+        totalRemoteNonZeros = checkedCsrAdd(totalRemoteNonZeros, last - first, "GET halo prefix");
         remoteRows.rowPtr[slot + 1] = totalRemoteNonZeros;
     }
-    remoteRows.columnIndices.assign(totalRemoteNonZeros, 0);
-    remoteRows.values.assign(totalRemoteNonZeros, 0.0);
+    remoteRows.columnIndices.assign(csrSize<int>(totalRemoteNonZeros), 0);
+    remoteRows.values.assign(csrSize<double>(totalRemoteNonZeros), 0.0);
 
     return rowBounds;
 }
 
-void fetchRemoteSparseRows(const std::vector<RowBlock>& bBlocks, const std::vector<int>& rowBounds,
+void fetchRemoteSparseRows(const std::vector<RowBlock>& bBlocks, const std::vector<CsrOffset>& rowBounds,
                            MPI_Win columnWindow, MPI_Win valueWindow,
                            RemoteSparseRows& remoteRows, MPI_Comm communicator) {
-    for (int peer = 0; peer < static_cast<int>(bBlocks.size()); ++peer) {
+    for (int peer = 0; peer < checkedMatrixDimension(checkedCsrCount(bBlocks.size())); ++peer) {
         const int peerOffset = remoteRows.plan.peerOffsets[peer];
         const auto& rows = remoteRows.plan.rowsByPeer[peer];
-        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+        for (int index = 0; index < checkedMatrixDimension(checkedCsrCount(rows.size())); ++index) {
             const int slot = peerOffset + index;
-            const int receiveOffset = remoteRows.rowPtr[slot];
-            const int count = remoteRows.rowPtr[slot + 1] - remoteRows.rowPtr[slot];
+            const CsrOffset receiveOffset = remoteRows.rowPtr[slot];
+            const CsrOffset count = remoteRows.rowPtr[slot + 1] - remoteRows.rowPtr[slot];
             if (count == 0) {
                 continue;
             }
 
-            const int remoteOffset = rowBounds[static_cast<std::size_t>(2 * slot)];
-            checkMpi(MPI_Get(remoteRows.columnIndices.data() + receiveOffset, count, MPI_INT, peer,
-                             static_cast<MPI_Aint>(remoteOffset), count, MPI_INT, columnWindow),
-                     "MPI_Get(B row columns)", communicator);
-            checkMpi(MPI_Get(remoteRows.values.data() + receiveOffset, count, MPI_DOUBLE, peer,
-                             static_cast<MPI_Aint>(remoteOffset), count, MPI_DOUBLE, valueWindow),
-                     "MPI_Get(B row values)", communicator);
+            const CsrOffset remoteOffset = rowBounds[(2 * static_cast<std::size_t>(slot))];
+            csrGet(remoteRows.columnIndices.data() + receiveOffset, count, peer, remoteOffset, columnWindow, communicator);
+            csrGet(remoteRows.values.data() + receiveOffset, count, peer, remoteOffset, valueWindow, communicator);
         }
     }
     checkMpi(MPI_Win_flush_all(columnWindow), "MPI_Win_flush_all(columns)", communicator);
@@ -165,7 +159,7 @@ int main(int argc, char** argv) {
             matrixShape = {globalMatrixA.rows, globalMatrixA.cols, globalMatrixB.rows,
                            globalMatrixB.cols};
         }
-        checkMpi(MPI_Bcast(matrixShape.data(), static_cast<int>(matrixShape.size()), MPI_INT, 0,
+        checkMpi(MPI_Bcast(matrixShape.data(), checkedMatrixDimension(checkedCsrCount(matrixShape.size())), MPI_INT, 0,
                            communicator),
                  "MPI_Bcast(matrix shape)", communicator);
 
@@ -186,16 +180,15 @@ int main(int argc, char** argv) {
         RemoteSparseRows remoteBRows =
             makeRemoteSparseRows(buildRemoteRowPlan(localMatrixA, bRowBlocks, rank, communicator));
         checkMpi(MPI_Win_create(dataOrNull(localMatrixB.rowPtr),
-                                static_cast<MPI_Aint>(localMatrixB.rowPtr.size()) * sizeof(int),
-                                sizeof(int), MPI_INFO_NULL, communicator, &rowPtrWindow),
+                                csrWindowBytes<CsrOffset>(localMatrixB.rowPtr.size()),
+                                sizeof(CsrOffset), MPI_INFO_NULL, communicator, &rowPtrWindow),
                  "MPI_Win_create(rowPtr)", communicator);
         checkMpi(MPI_Win_create(dataOrNull(localMatrixB.columnIndices),
-                                static_cast<MPI_Aint>(localMatrixB.columnIndices.size()) *
-                                    sizeof(int),
+                                csrWindowBytes<int>(localMatrixB.columnIndices.size()),
                                 sizeof(int), MPI_INFO_NULL, communicator, &columnWindow),
                  "MPI_Win_create(columns)", communicator);
         checkMpi(MPI_Win_create(dataOrNull(localMatrixB.values),
-                                static_cast<MPI_Aint>(localMatrixB.values.size()) * sizeof(double),
+                                csrWindowBytes<double>(localMatrixB.values.size()),
                                 sizeof(double), MPI_INFO_NULL, communicator, &valueWindow),
                  "MPI_Win_create(values)", communicator);
         checkMpi(MPI_Win_lock_all(MPI_MODE_NOCHECK, rowPtrWindow), "MPI_Win_lock_all(rowPtr)",
@@ -206,7 +199,7 @@ int main(int argc, char** argv) {
                  communicator);
         windowsLocked = true;
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
-        const std::vector<int> rowBounds =
+        const std::vector<CsrOffset> rowBounds =
             prepareRemoteSparseRows(bRowBlocks, rowPtrWindow, remoteBRows, communicator);
         checkMpi(MPI_Barrier(communicator), "MPI_Barrier", communicator);
         const double haloSetupEnd = MPI_Wtime();

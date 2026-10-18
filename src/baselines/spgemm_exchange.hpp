@@ -14,7 +14,7 @@ struct RemoteRowPlan {
 
 struct RemoteSparseRows {
     RemoteRowPlan plan;
-    std::vector<int> rowPtr;
+    std::vector<CsrOffset> rowPtr;
     std::vector<int> columnIndices;
     std::vector<double> values;
 };

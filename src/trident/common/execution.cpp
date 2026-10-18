@@ -13,10 +13,10 @@ int wrap(int value, int size) { return (value % size + size) % size; }
 }  // namespace
 
 ExecutionPlan preparePlan(const CsrMatrix& a, const CsrMatrix& b, const ProcessGrid& grid) {
-    const std::array<int, 6> local{a.rows, a.cols, mpiCount(a.values.size()),
-                                  b.rows, b.cols, mpiCount(b.values.size())};
-    std::vector<std::array<int, 6>> shapes(grid.size);
-    checkMpi(MPI_Allgather(local.data(), 6, MPI_INT, shapes.data(), 6, MPI_INT, grid.world),
+    const std::array<CsrOffset, 6> local{a.rows, a.cols, checkedCsrCount(a.values.size()),
+                                  b.rows, b.cols, checkedCsrCount(b.values.size())};
+    std::vector<std::array<CsrOffset, 6>> shapes(grid.size);
+    checkMpi(MPI_Allgather(local.data(), 6, MPI_INT64_T, shapes.data(), 6, MPI_INT64_T, grid.world),
              "MPI_Allgather(tile shapes)", grid.world);
     ExecutionPlan plan;
     plan.resultRows = a.rows;
@@ -30,17 +30,17 @@ ExecutionPlan preparePlan(const CsrMatrix& a, const CsrMatrix& b, const ProcessG
         stage.bTarget = grid.rankAt(wrap(grid.row - grid.col - round, grid.side), grid.col, grid.nodeRank);
         const auto& sa = shapes[stage.aSource];
         const auto& sb = shapes[stage.bSource];
-        stage.a = {sa[0], sa[1], sa[2]};
-        stage.b = {sb[3], sb[4], sb[5]};
+        stage.a = {checkedMatrixDimension(sa[0]), checkedMatrixDimension(sa[1]), sa[2]};
+        stage.b = {checkedMatrixDimension(sb[3]), checkedMatrixDimension(sb[4]), sb[5]};
         stage.panel.cols = b.cols;
         for (int k = 0; k < grid.nodeSize; ++k) {
             const auto& shape = shapes[grid.rankAt(stage.inner, grid.col, k)];
-            stage.rowCounts.push_back(shape[3]);
+            stage.rowCounts.push_back(checkedMatrixDimension(shape[3]));
             stage.rowOffsets.push_back(stage.panel.rows);
             stage.nnzCounts.push_back(shape[5]);
             stage.nnzOffsets.push_back(stage.panel.nnz);
-            stage.panel.rows = mpiCount(static_cast<std::size_t>(stage.panel.rows) + shape[3]);
-            stage.panel.nnz = mpiCount(static_cast<std::size_t>(stage.panel.nnz) + shape[5]);
+            stage.panel.rows = checkedMatrixDimension(checkedCsrAdd(stage.panel.rows, shape[3], "panel rows"));
+            stage.panel.nnz = checkedCsrAdd(stage.panel.nnz, shape[5], "panel nnz");
             if (shape[4] != stage.panel.cols) {
                 throw std::runtime_error("inconsistent B column slices within a Trident node");
             }
