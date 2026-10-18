@@ -9,14 +9,14 @@ from pathlib import Path
 import sys
 
 PROTOCOLS = {
-    "spgemm_two_sided": "prepared_halo_v2",
-    "spgemm_one_sided_get": "prepared_halo_v2",
-    "spgemm_one_sided_put": "prepared_halo_v2",
-    "trident_two_sided": "trident_staged_csr_v1",
-    "trident_hybrid": "trident_hybrid_rma_requests_v1",
-    "trident_get": "trident_get_csr_v1",
-    "trident_get_pipeline": "trident_get_pipeline_csr_v1",
-    "trident_put": "trident_put_staged_csr_v1",
+    "spgemm_two_sided": "prepared_halo_csr64_v3",
+    "spgemm_one_sided_get": "prepared_halo_csr64_v3",
+    "spgemm_one_sided_put": "prepared_halo_csr64_v3",
+    "trident_two_sided": "trident_staged_csr64_v2",
+    "trident_hybrid": "trident_hybrid_rma_requests_csr64_v2",
+    "trident_get": "trident_get_csr64_v2",
+    "trident_get_pipeline": "trident_get_pipeline_csr64_v2",
+    "trident_put": "trident_put_staged_csr64_v2",
 }
 args = sys.argv[1:]
 def value(flag):
@@ -53,7 +53,7 @@ row.update(c_nnz=4, ranks=ranks, threads_per_rank=value("--threads"),
            full_product_seconds="1.2", first_gather_seconds="0.1",
            max_abs_error="NA" if "--no-validate" in args else "0",
            validation="SKIPPED" if "--no-validate" in args else "PASS",
-           benchmark_protocol=PROTOCOLS[variant])
+           benchmark_protocol=PROTOCOLS[variant], csr_offset_bits="64", mpi_chunk_limit="2147483647")
 if trident:
     row.update(nodes=nodes, ranks_per_node=rpm, grid_rows=math.isqrt(nodes), grid_cols=math.isqrt(nodes),
                topology="logical_test" if logical else "physical", plan_setup_seconds="0.2",

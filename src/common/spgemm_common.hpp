@@ -4,6 +4,7 @@
 #include <omp.h>
 
 #include "csr_matrix.hpp"
+#include "mpi_large.hpp"
 
 #include <cstdint>
 #include <optional>

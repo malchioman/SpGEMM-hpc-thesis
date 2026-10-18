@@ -19,7 +19,6 @@ std::vector<std::int64_t> scalarProductsByRank(const CsrMatrix& a, const CsrMatr
 CsrMatrix sliceBlock(const CsrMatrix& matrix, MatrixBlock block);
 CsrMatrix distributeBlocks(const CsrMatrix* matrix, int rows, int cols, const ProcessGrid& grid);
 CsrMatrix gatherBlocks(const CsrMatrix& local, int rows, int cols, const ProcessGrid& grid);
-int mpiCount(std::size_t size);
 
 class LocalAccumulator {
 public:
