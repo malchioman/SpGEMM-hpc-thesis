@@ -51,8 +51,8 @@ row.update(c_nnz=4, ranks=ranks, threads_per_rank=value("--threads"),
            communication_p90_seconds="0.2", compute_p90_seconds="0.3",
            end_to_end_p90_seconds="0.4", gather_seconds="0.1",
            full_product_seconds="1.2", first_gather_seconds="0.1",
-           max_abs_error="NA" if "--no-validate" in args else "0",
-           validation="SKIPPED" if "--no-validate" in args else "PASS",
+           max_abs_error="NA" if "--no-validate" in args or "--partial" in args else "0",
+           validation="PARTIAL_PASS" if "--partial" in args else "SKIPPED" if "--no-validate" in args else "PASS",
            benchmark_protocol=PROTOCOLS[variant])
 if trident:
     row.update(nodes=nodes, ranks_per_node=rpm, grid_rows=math.isqrt(nodes), grid_cols=math.isqrt(nodes),
@@ -108,7 +108,7 @@ elif failure == "validation_error":
 if failure == "protocol":
     row["benchmark_protocol"] = "wrong_protocol"
 elif failure == "validation":
-    row["validation"] = "FAIL"
+    row["validation"] = "PARTIAL_FAIL" if "--partial" in args else "FAIL"
 elif failure == "nan":
     row["end_to_end_p90_seconds"] = "nan"
 elif failure == "topology" and trident:

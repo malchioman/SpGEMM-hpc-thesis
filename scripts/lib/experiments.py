@@ -98,6 +98,8 @@ def options(argv=None):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--validate", dest="validate", action="store_true", default=None)
     group.add_argument("--no-validate", dest="validate", action="store_false")
+    group.add_argument("--partial", dest="validate", action="store_const", const="partial",
+                       help="compare row nnz counts with the serial product")
     parser.add_argument("--dry-run", action="store_true", help="preview without requiring inputs/binaries or writing files")
     parser.add_argument("--local-check", action="store_true", help="logical nodes on localhost; validation on, test-results/local-check by default")
     args = parser.parse_args(argv)
@@ -139,8 +141,8 @@ def options(argv=None):
         raise ValueError("Repeated node counts; use runs for independent repetitions")
     if cfg.schedule not in ("static", "dynamic", "guided", "auto"):
         raise ValueError("Invalid OpenMP schedule")
-    if type(cfg.validate) is not bool:
-        raise ValueError("validate must be true or false")
+    if type(cfg.validate) is not bool and cfg.validate != "partial":
+        raise ValueError('validate must be true, false or "partial"')
     for key in ("variants", "matrices", "pilot_matrices", "permutation_matrices"):
         values = getattr(cfg, key)
         if not isinstance(values, list) or not values or any(not isinstance(v, str) for v in values):
@@ -312,7 +314,9 @@ def command(cfg, action, case, variant, nodes, raw_path):
             "--experiment", action, "--results", str(raw_path)]
     if cfg.local_check and variant.startswith("trident_"):
         cmd += ["--logical-node-size", str(cfg.ranks_per_node)]
-    if not validate:
+    if validate == "partial":
+        cmd += ["--partial"]
+    elif not validate:
         cmd += ["--no-validate"]
     return cmd
 
@@ -363,13 +367,13 @@ def validate_structure_metrics(row):
 def validate_measurements(row, trident):
     """Shared checks for a new launch and for observations reused by analysis exports."""
     validate = row["validation"] == "PASS"
-    if row["validation"] not in ("PASS", "SKIPPED") or row["result_finite"] != "1":
+    if row["validation"] not in ("PASS", "PARTIAL_PASS", "SKIPPED") or row["result_finite"] != "1":
         raise ValueError("Failed validation or non-finite product")
     if validate:
         if not 0 <= float(row["max_abs_error"]) < 1e-10:
             raise ValueError("PASS disagrees with the numerical validation error")
     elif row["max_abs_error"] != "NA":
-        raise ValueError("Skipped validation must have max_abs_error=NA")
+        raise ValueError("Partial or skipped validation must have max_abs_error=NA")
     for key in ("a_rows", "a_cols", "b_rows", "b_cols", "ranks", "repeats", "trials"):
         if int(row[key]) < 1:
             raise ValueError("Invalid positive count: " + key)
@@ -431,7 +435,7 @@ def normalize(cfg, action, case, variant, nodes, raw_path, headers):
                     warmup=warmup, repeats=repeats, trials=trials,
                     a_rows=headers[a]["rows"], a_cols=headers[a]["cols"],
                     b_rows=headers[b]["rows"], b_cols=headers[b]["cols"],
-                    validation="PASS" if validate else "SKIPPED")
+                    validation="PARTIAL_PASS" if validate == "partial" else "PASS" if validate else "SKIPPED")
     if trident:
         expected.update(nodes=nodes, ranks_per_node=cfg.ranks_per_node,
                         topology="logical_test" if cfg.local_check else "physical",
@@ -493,7 +497,7 @@ def analyze(cfg, action):
             rows.extend(read_table(cfg.results_dir / source / (variant + ".tsv"), FIELDS))
         output = []
         for row in rows:
-            if row["benchmark_protocol"] != PROTOCOLS[variant] or row["validation"] not in ("PASS", "SKIPPED"):
+            if row["benchmark_protocol"] != PROTOCOLS[variant] or row["validation"] not in ("PASS", "PARTIAL_PASS", "SKIPPED"):
                 raise ValueError("Invalid source observation for " + variant)
             validate_measurements(row, variant.startswith("trident_"))
             derived = {key: row[key] for key in fields if key in row}

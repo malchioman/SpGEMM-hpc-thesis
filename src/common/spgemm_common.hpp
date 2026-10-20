@@ -11,6 +11,17 @@
 #include <utility>
 #include <vector>
 
+enum class ValidationMode { Full, Partial, None };
+
+struct ValidationResult {
+    ValidationMode mode = ValidationMode::Full;
+    bool passed = true;
+    std::optional<double> maxAbsoluteError;
+    int rowNnzMismatches = 0;
+
+    const char* status() const;
+};
+
 struct Options {
     int rows = 1'024;
     int cols = 1'024;
@@ -22,7 +33,7 @@ struct Options {
     int repeats = 10;
     int trials = 5;
     int chunk = 64;
-    bool validate = true;
+    ValidationMode validationMode = ValidationMode::Full;
     std::string schedule = "guided";
     std::string matrixAPath;
     std::string matrixBPath;
@@ -59,6 +70,10 @@ std::int64_t scalarMultiplicationCount(const CsrMatrix& matrixA, const CsrMatrix
 // Returns infinity for incompatible shapes or non-finite values/differences.
 double maxAbsoluteDifference(const CsrMatrix& lhs, const CsrMatrix& rhs);
 bool validationPassed(double maxAbsoluteError);
+// Partial validation computes one serial row at a time, drops exact zeros and compares
+// row nnz counts. It rejects non-finite results but does not compare columns or values.
+ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                                 const CsrMatrix& result, ValidationMode mode);
 double maxRankValue(double value, MPI_Comm communicator);
 double maxElapsed(double start, MPI_Comm communicator);
 double percentile90(std::vector<double> samples);
@@ -75,7 +90,7 @@ BenchmarkMetrics collectBenchmarkMetrics(
     const CsrMatrix& localA, const CsrMatrix& localB, const CsrMatrix& localC,
     const std::vector<std::int64_t>& work, MPI_Comm communicator);
 
-// An absent maximum error denotes skipped validation in both output formats.
+// The numerical error is absent for both partial and skipped validation.
 void appendBenchmarkResult(const std::string& implementation, const Options& options, int ranks,
                            const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                            const CsrMatrix& matrixC, double distributionSeconds,
@@ -83,7 +98,7 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops,
-                           std::optional<double> maxAbsoluteError,
+                           const ValidationResult& validation,
                            const std::vector<double>& communicationSamples,
                            const std::vector<double>& computeSamples,
                            const std::vector<double>& endToEndSamples,
@@ -96,5 +111,5 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops,
-                           std::optional<double> maxAbsoluteError,
+                           const ValidationResult& validation,
                            double fullProductSeconds, double firstGatherSeconds);

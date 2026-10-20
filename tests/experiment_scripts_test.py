@@ -63,6 +63,39 @@ class CampaignTest(unittest.TestCase):
     def launches(self):
         return [json.loads(line) for line in self.launch_log.read_text(encoding="utf-8").splitlines()]
 
+    def test_partial_campaign_and_exports(self):
+        self.run_action("all", "--partial")
+        for variant in runner.PROTOCOLS:
+            self.assertEqual(self.rows("pilot", variant)[0]["validation"], "PASS")
+            for action in ("strong_scaling", "permutation", "rectangular", "phase_analysis"):
+                for row in self.rows(action, variant):
+                    self.assertEqual(row["validation"], "PARTIAL_PASS")
+                    self.assertEqual(row["max_abs_error"], "NA")
+        for launch in self.launches():
+            self.assertNotIn("--no-validate", launch)
+            self.assertEqual("--partial" in launch, "pilot" not in launch)
+
+    def test_partial_config_and_rejected_measurements(self):
+        config = json.loads(self.config.read_text())
+        config["validate"] = "partial"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        self.run_action("strong_scaling", "--variants", "trident_get")
+        self.assertEqual(self.rows("strong_scaling")[0]["validation"], "PARTIAL_PASS")
+        path = self.results / "strong_scaling/trident_get.tsv"
+        original = path.read_bytes()
+        for failure in ("validation", "validation_error", "nonfinite_product"):
+            with self.subTest(failure=failure), patch.dict(os.environ, {"MOCK_FAILURE": failure}):
+                with self.assertRaisesRegex(RuntimeError, "no observation appended"):
+                    self.run_action("strong_scaling", "--variants", "trident_get")
+                self.assertEqual(path.read_bytes(), original)
+        for field, value in (("validation", "PARTIAL_FAIL"), ("max_abs_error", "0")):
+            rows = self.rows("strong_scaling")
+            rows[0][field] = value
+            runner.write_table(path, runner.FIELDS, rows)
+            with self.assertRaises(ValueError):
+                self.run_action("phase_analysis", "--variants", "trident_get")
+            path.write_bytes(original)
+
     def test_complete_campaign_and_repeat_exports(self):
         self.run_action("all")
         self.assertEqual(len(self.launches()), 72)  # 24 pilot + 3 products * 2 launches * 8 implementations

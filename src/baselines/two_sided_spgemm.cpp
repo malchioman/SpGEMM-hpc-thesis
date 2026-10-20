@@ -182,12 +182,9 @@ int main(int argc, char** argv) {
             work, communicator);
 
         if (rank == 0) {
-            std::optional<double> error;
-            if (options.validate) {
-                const CsrMatrix reference = serialSpgemm(globalMatrixA, globalMatrixB);
-                error = maxAbsoluteDifference(globalResult, reference);
-            }
-            exitCode = (!error || validationPassed(*error)) ? EXIT_SUCCESS : EXIT_FAILURE;
+            const auto validation = validateProduct(globalMatrixA, globalMatrixB, globalResult,
+                                                     options.validationMode);
+            exitCode = validation.passed ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));
             const double computeGflops = computeP90Seconds > 0.0
@@ -196,13 +193,13 @@ int main(int argc, char** argv) {
             appendBenchmarkResult(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
                                   globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
-                                  gatherSeconds, computeGflops, error,
+                                  gatherSeconds, computeGflops, validation,
                                   communicationSamples, computeSamples, endToEndSamples,
                                   fullProductSeconds, firstGatherSeconds, metrics);
             printBenchmarkSummary(kImplementation, options, ranks, globalMatrixA, globalMatrixB,
                                   globalResult, distributionSeconds, haloSetupSeconds, firstProductSeconds,
                                   communicationP90Seconds, computeP90Seconds, endToEndP90Seconds,
-                                  gatherSeconds, computeGflops, error,
+                                  gatherSeconds, computeGflops, validation,
                                   fullProductSeconds, firstGatherSeconds);
         }
         checkMpi(MPI_Bcast(&exitCode, 1, MPI_INT, 0, communicator), "MPI_Bcast(validation)", communicator);

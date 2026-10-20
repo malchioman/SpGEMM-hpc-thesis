@@ -9,14 +9,17 @@
 
 namespace {
 
-Options parse(const std::string& option, const std::string& value) {
-    std::vector<std::string> arguments{
-        "options_test", "--nnz-per-row", "1", "--b-nnz-per-row", "1", option, value};
+Options parseArguments(std::vector<std::string> arguments) {
+    arguments.insert(arguments.begin(), {"options_test", "--nnz-per-row", "1", "--b-nnz-per-row", "1"});
     std::vector<char*> argv;
     for (auto& argument : arguments) argv.push_back(argument.data());
     const int argc = static_cast<int>(argv.size());
     argv.push_back(nullptr);
     return parseOptions(argc, argv.data(), "options_test", "unused.tsv");
+}
+
+Options parse(const std::string& option, const std::string& value) {
+    return parseArguments({option, value});
 }
 
 void expectRejected(const std::string& option, const std::string& value) {
@@ -35,6 +38,13 @@ void expectRejected(const std::string& option, const std::string& value) {
 
 int main() {
     try {
+        if (parseArguments({}).validationMode != ValidationMode::Full ||
+            parseArguments({"--partial"}).validationMode != ValidationMode::Partial ||
+            parseArguments({"--no-validate"}).validationMode != ValidationMode::None) {
+            throw std::runtime_error("wrong validation mode");
+        }
+        expectRejected("--partial", "--no-validate");
+        expectRejected("--no-validate", "--partial");
         const std::vector<std::pair<std::string, int Options::*>> positiveOptions{
             {"--rows", &Options::rows}, {"--cols", &Options::cols},
             {"--b-cols", &Options::bCols}, {"--nnz-per-row", &Options::nonZerosPerRow},

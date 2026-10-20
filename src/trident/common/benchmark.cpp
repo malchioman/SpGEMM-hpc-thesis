@@ -194,10 +194,8 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
         const auto metrics = collectBenchmarkMetrics(globalA, globalB, result, a, b, product.matrix,
                                                      work, grid.world);
         if (grid.rank == 0) {
-            std::optional<double> error;
-            if (options.validate) error = maxAbsoluteDifference(result, serialSpgemm(globalA, globalB));
-            const std::string validation = !error ? "SKIPPED" : validationPassed(*error) ? "PASS" : "FAIL";
-            exitCode = validation == "FAIL" ? EXIT_FAILURE : EXIT_SUCCESS;
+            const auto validation = validateProduct(globalA, globalB, result, options.validationMode);
+            exitCode = validation.passed ? EXIT_SUCCESS : EXIT_FAILURE;
             std::array<double, 5> p90{};
             for (std::size_t i = 0; i < p90.size(); ++i) p90[i] = percentile90(samples[i]);
             const double flops = 2.0 * static_cast<double>(scalarMultiplicationCount(globalA, globalB));
@@ -224,7 +222,8 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
                 {"communication_p90_seconds", number(p90[2])}, {"compute_p90_seconds", number(p90[3])},
                 {"end_to_end_p90_seconds", number(p90[4])}, {"gather_seconds", number(gatherSeconds)},
                 {"compute_gflops", number(p90[3] > 0.0 ? flops / p90[3] / 1.0e9 : 0.0)},
-                {"max_abs_error", error ? number(*error) : "NA"}, {"validation", validation},
+                {"max_abs_error", validation.maxAbsoluteError ? number(*validation.maxAbsoluteError) : "NA"},
+                {"validation", validation.status()},
                 {"inter_node_samples_seconds", timingSamplesJson(samples[0])},
                 {"intra_node_samples_seconds", timingSamplesJson(samples[1])},
                 {"communication_samples_seconds", timingSamplesJson(samples[2])},

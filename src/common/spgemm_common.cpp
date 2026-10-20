@@ -36,13 +36,6 @@ std::string matrixBSource(const Options& options) {
     return "synthetic";
 }
 
-const char* validationStatus(std::optional<double> maxAbsoluteError) {
-    if (!maxAbsoluteError) {
-        return "SKIPPED";
-    }
-    return validationPassed(*maxAbsoluteError) ? "PASS" : "FAIL";
-}
-
 void printUsage(const std::string& programName, const std::string& defaultResultsPath) {
     std::cout
         << "Usage: " << programName << " [options]\n"
@@ -59,7 +52,8 @@ void printUsage(const std::string& programName, const std::string& defaultResult
         << "  --matrix-a PATH      Matrix Market coordinate input for A\n"
         << "                       Without --matrix-b, requires square A and computes A*A\n"
         << "  --matrix-b PATH      Matrix Market coordinate input for B\n"
-        << "  --no-validate        Skip serial reference and result comparison (default: validate)\n"
+        << "  --partial            Compare only row nnz counts with a streamed serial reference\n"
+        << "  --no-validate        Skip serial reference and result comparison (default: full)\n"
         << "  --results PATH       TSV output path (default: " << defaultResultsPath << ")\n"
         << "  --experiment TAG     Experiment label stored in the TSV (default: manual)\n"
         << "  --schedule NAME      OpenMP schedule: static, dynamic, guided, auto (default: guided)\n"
@@ -129,19 +123,13 @@ void appendCsrBlock(CsrMatrix& globalResult, const CsrMatrix& localResult, RowBl
     }
 }
 
-CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+template <typename ConsumeRow>
+void forEachSerialProductRow(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                             ConsumeRow consumeRow) {
     validateMultiplicationDimensions(matrixA, matrixB);
-
-    CsrMatrix result;
-    result.rows = matrixA.rows;
-    result.cols = matrixB.cols;
-    result.rowPtr.resize(static_cast<std::size_t>(matrixA.rows) + 1, 0);
-
     std::unordered_map<int, double> accumulator;
-    std::vector<int> touchedColumns;
     for (int row = 0; row < matrixA.rows; ++row) {
         accumulator.clear();
-        touchedColumns.clear();
 
         for (int aEntry = matrixA.rowPtr[row]; aEntry < matrixA.rowPtr[row + 1]; ++aEntry) {
             const int bRow = matrixA.columnIndices[aEntry];
@@ -153,24 +141,34 @@ CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& m
                 const int column = matrixB.columnIndices[bEntry];
                 const double product = aValue * matrixB.values[bEntry];
                 const auto [position, inserted] = accumulator.emplace(column, product);
-                if (inserted) {
-                    touchedColumns.push_back(column);
-                } else {
+                if (!inserted) {
                     position->second += product;
                 }
             }
         }
+        consumeRow(row, accumulator);
+    }
+}
 
+CsrMatrix buildSerialRowWiseProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    validateMultiplicationDimensions(matrixA, matrixB);
+    CsrMatrix result;
+    result.rows = matrixA.rows;
+    result.cols = matrixB.cols;
+    result.rowPtr.resize(static_cast<std::size_t>(matrixA.rows) + 1, 0);
+    std::vector<int> touchedColumns;
+    forEachSerialProductRow(matrixA, matrixB, [&](int row, const auto& accumulator) {
+        touchedColumns.clear();
+        for (const auto& entry : accumulator) {
+            if (entry.second != 0.0) touchedColumns.push_back(entry.first);
+        }
         std::sort(touchedColumns.begin(), touchedColumns.end());
         for (const int column : touchedColumns) {
-            const double value = accumulator.at(column);
-            if (value != 0.0) {
-                result.columnIndices.push_back(column);
-                result.values.push_back(value);
-            }
+            result.columnIndices.push_back(column);
+            result.values.push_back(accumulator.at(column));
         }
         result.rowPtr[row + 1] = checkedCsrCount(result.values.size());
-    }
+    });
     return result;
 }
 
@@ -206,8 +204,12 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
             printUsage(programName, defaultResultsPath);
             std::exit(EXIT_SUCCESS);
         }
-        if (argument == "--no-validate") {
-            options.validate = false;
+        if (argument == "--no-validate" || argument == "--partial") {
+            const auto mode = argument == "--partial" ? ValidationMode::Partial : ValidationMode::None;
+            if (options.validationMode != ValidationMode::Full && options.validationMode != mode) {
+                throw std::invalid_argument("--partial and --no-validate are mutually exclusive");
+            }
+            options.validationMode = mode;
             continue;
         }
         if (index + 1 == argc) {
@@ -541,6 +543,43 @@ bool validationPassed(double maxAbsoluteError) {
            maxAbsoluteError < 1.0e-10;
 }
 
+const char* ValidationResult::status() const {
+    if (mode == ValidationMode::None) return "SKIPPED";
+    if (mode == ValidationMode::Partial) return passed ? "PARTIAL_PASS" : "PARTIAL_FAIL";
+    return passed ? "PASS" : "FAIL";
+}
+
+ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                                 const CsrMatrix& result, ValidationMode mode) {
+    ValidationResult validation;
+    validation.mode = mode;
+    if (mode == ValidationMode::None) return validation;
+    if (mode == ValidationMode::Full) {
+        validation.maxAbsoluteError = maxAbsoluteDifference(result, serialSpgemm(matrixA, matrixB));
+        validation.passed = validationPassed(*validation.maxAbsoluteError);
+        return validation;
+    }
+    validateMultiplicationDimensions(matrixA, matrixB);
+    if (result.rows != matrixA.rows || result.cols != matrixB.cols) {
+        validation.passed = false;
+        return validation;
+    }
+    validation.passed = std::all_of(result.values.begin(), result.values.end(),
+                                    [](double value) { return std::isfinite(value); });
+    forEachSerialProductRow(matrixA, matrixB, [&](int row, const auto& accumulator) {
+        int referenceNnz = 0;
+        for (const auto& entry : accumulator) {
+            if (!std::isfinite(entry.second)) validation.passed = false;
+            if (entry.second != 0.0) ++referenceNnz;
+        }
+        if (referenceNnz != result.rowPtr[row + 1] - result.rowPtr[row]) {
+            ++validation.rowNnzMismatches;
+        }
+    });
+    validation.passed = validation.passed && validation.rowNnzMismatches == 0;
+    return validation;
+}
+
 double maxRankValue(double value, MPI_Comm communicator) {
     double maximum = 0.0;
     checkMpi(MPI_Reduce(&value, &maximum, 1, MPI_DOUBLE, MPI_MAX, 0, communicator), "MPI_Reduce",
@@ -580,7 +619,7 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double gflops,
-                           std::optional<double> maxAbsoluteError,
+                           const ValidationResult& validation,
                            const std::vector<double>& communicationSamples,
                            const std::vector<double>& computeSamples,
                            const std::vector<double>& endToEndSamples,
@@ -643,12 +682,12 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
            << haloSetupSeconds << '\t' << firstProductSeconds << '\t'
            << communicationP90Seconds << '\t' << computeP90Seconds
            << '\t' << endToEndP90Seconds << '\t' << gatherSeconds << '\t' << gflops << '\t';
-    if (maxAbsoluteError) {
-        output << *maxAbsoluteError;
+    if (validation.maxAbsoluteError) {
+        output << *validation.maxAbsoluteError;
     } else {
         output << "NA";
     }
-    output << '\t' << validationStatus(maxAbsoluteError) << "\tprepared_halo_v2\t"
+    output << '\t' << validation.status() << "\tprepared_halo_v2\t"
            << timingSamplesJson(communicationSamples) << '\t'
            << timingSamplesJson(computeSamples) << '\t'
            << timingSamplesJson(endToEndSamples) << '\t'
@@ -666,7 +705,7 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
                            double communicationP90Seconds,
                            double computeP90Seconds, double endToEndP90Seconds,
                            double gatherSeconds, double computeGflops,
-                           std::optional<double> maxAbsoluteError,
+                           const ValidationResult& validation,
                            double fullProductSeconds, double firstGatherSeconds) {
     std::cout << std::fixed << std::setprecision(6) << "implementation=" << implementation << '\n'
               << "benchmark_protocol=prepared_halo_v2\n"
@@ -695,12 +734,12 @@ void printBenchmarkSummary(const std::string& implementation, const Options& opt
               << "first_gather_seconds=" << firstGatherSeconds << '\n'
               << "compute_gflops=" << computeGflops << '\n'
               << "max_abs_error=";
-    if (maxAbsoluteError) {
-        std::cout << *maxAbsoluteError;
+    if (validation.maxAbsoluteError) {
+        std::cout << *validation.maxAbsoluteError;
     } else {
         std::cout << "NA";
     }
     std::cout << '\n'
-              << "validation=" << validationStatus(maxAbsoluteError) << '\n'
+              << "validation=" << validation.status() << '\n'
               << "results_file=" << options.resultsPath << '\n';
 }

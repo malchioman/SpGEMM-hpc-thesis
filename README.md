@@ -365,6 +365,7 @@ executable launches; experiment scripts apply their own configuration.
 | `--warmup N` | `2` | Extra untimed products after the first product |
 | `--repeats N` | `10` | Timed products per trial |
 | `--trials N` | `5` | Groups of repetitions within the same MPI launch |
+| `--partial` | Full validation | Compare nonzero counts per row with the serial product |
 | `--no-validate` | Validation enabled | Skip the serial reference and comparison |
 | `--results PATH` | Variant-specific | TSV file to append to |
 | `--experiment TAG` | `manual` | Label stored in the result row |
@@ -416,7 +417,8 @@ default for every variant. Each node therefore needs at least
 `ranks_per_node * (threads + 1)` allocated cores with that default.
 
 The pilot always validates. Main campaigns currently default to validation
-disabled in `experiments.json`; pass `--validate` to enable it. `--runs` controls
+disabled in `experiments.json`; pass `--validate` for full numerical validation or
+`--partial` for row-nnz validation. `--runs` controls
 independent MPI launches, while `--repeats` and `--trials` control samples within
 each launch. For example, `--runs 3 --repeats 10 --trials 5` produces three result
 rows, each summarizing 50 timed products per input/configuration/variant.
@@ -511,6 +513,26 @@ a serial SpGEMM result. Validation requires a maximum absolute error **strictly
 below `1e-10`**. NaN and infinity fail. A failed comparison records `FAIL` and
 returns a nonzero exit status on all ranks.
 
+For large products, `--partial` compares the number of nonzeros **in every row**
+with the serial reference. Rank 0 accumulates one reference row at a time and
+discards it after the comparison, avoiding storage of a second complete C and
+sorting its columns. It still performs the serial numerical multiplication,
+including exact-zero removal after cancellation or underflow; this is not a
+symbolic count of reachable columns. Non-finite values in C or the reference fail.
+Validation remains outside the benchmark timers.
+
+The console and TSV record `validation=PARTIAL_PASS` or `PARTIAL_FAIL`, with
+`max_abs_error=NA`. A partial failure returns a nonzero status on all ranks.
+Matching row counts are an additional consistency check, not proof that columns
+or numerical values are correct. Counts use exact zeros, so rounding around zero
+can make this check fail even when full validation would meet its tolerance.
+`--partial` and `--no-validate` are mutually exclusive. For example:
+
+```bash
+mpirun -np 4 ./build/trident_get --matrix matrices/cage8.mtx --partial \
+  --results results/trident_get_partial.tsv
+```
+
 `--no-validate` skips the serial reference and comparison and records
 `validation=SKIPPED`, `max_abs_error=NA`. The final C is still gathered, and rank 0
 still retains global A and B. This removes serial validation time but does not
@@ -528,7 +550,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 The suite covers input parsing, numeric options, rectangular/empty matrices,
-uneven partitions, validation failures and all eight implementations. Trident
+uneven partitions, full/partial validation failures and all eight implementations. Trident
 tests also check topology, independent dense reference products, cancellation,
 changed payloads across repeated products, and RMA buffer lifetimes.
 
