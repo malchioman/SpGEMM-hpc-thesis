@@ -19,14 +19,14 @@ sys.path.insert(0, str(REPO / "scripts"))
 import matrices  # noqa: E402
 
 PROTOCOLS = {
-    "spgemm_two_sided": "prepared_halo_v2",
-    "spgemm_one_sided_get": "prepared_halo_v2",
-    "spgemm_one_sided_put": "prepared_halo_v2",
-    "trident_two_sided": "trident_staged_csr_v1",
-    "trident_hybrid": "trident_hybrid_rma_requests_v1",
-    "trident_get": "trident_get_csr_v1",
-    "trident_get_pipeline": "trident_get_pipeline_csr_v1",
-    "trident_put": "trident_put_staged_csr_v1",
+    "spgemm_two_sided": "prepared_halo_csr64_v3",
+    "spgemm_one_sided_get": "prepared_halo_csr64_v3",
+    "spgemm_one_sided_put": "prepared_halo_csr64_v3",
+    "trident_two_sided": "trident_staged_csr64_v2",
+    "trident_hybrid": "trident_hybrid_rma_requests_csr64_v2",
+    "trident_get": "trident_get_csr64_v2",
+    "trident_get_pipeline": "trident_get_pipeline_csr64_v2",
+    "trident_put": "trident_put_staged_csr64_v2",
 }
 RUN_ACTIONS = ("pilot", "strong_scaling", "permutation", "rectangular")
 ANALYSES = ("phase_analysis", "matrix_structure")
@@ -34,7 +34,7 @@ IDENTITY = [
     "matrix_a", "matrix_b", "a_rows", "a_cols", "b_rows", "b_cols",
     "a_nnz", "b_nnz", "c_nnz", "nodes", "ranks", "ranks_per_node",
     "threads_per_rank", "cpus_per_rank", "topology", "omp_schedule", "omp_chunk",
-    "warmup", "repeats", "trials", "benchmark_protocol",
+    "warmup", "repeats", "trials", "benchmark_protocol", "csr_offset_bits", "mpi_chunk_limit",
 ]
 TIMINGS = [
     "distribution_seconds", "halo_setup_seconds", "plan_setup_seconds",
@@ -366,6 +366,8 @@ def validate_structure_metrics(row):
 
 def validate_measurements(row, trident):
     """Shared checks for a new launch and for observations reused by analysis exports."""
+    if row.get("csr_offset_bits") != "64" or not 1 <= int(row["mpi_chunk_limit"]) <= 2147483647:
+        raise ValueError("Invalid CSR representation or MPI chunk limit")
     validate = row["validation"] == "PASS"
     if row["validation"] not in ("PASS", "PARTIAL_PASS", "SKIPPED") or row["result_finite"] != "1":
         raise ValueError("Failed validation or non-finite product")

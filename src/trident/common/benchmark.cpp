@@ -39,7 +39,7 @@ RunOptions parseArguments(int argc, char** argv, const std::string& implementati
             commonArgs.push_back(argv[i]);
         }
     }
-    result.benchmark = parseOptions(mpiCount(commonArgs.size()), commonArgs.data(), implementation,
+    result.benchmark = parseOptions(checkedMatrixDimension(checkedCsrCount(commonArgs.size())), commonArgs.data(), implementation,
                                     "results/trident/" + implementation + "_v1.tsv");
     return result;
 }

@@ -20,5 +20,5 @@ std::unique_ptr<trident::InterNodeExchange> makeInter(const trident::ProcessGrid
 
 int main(int argc, char** argv) {
     return trident::runBenchmark(argc, argv, {"trident_hybrid", makeIntra, makeInter,
-        MPI_THREAD_MULTIPLE, "trident_hybrid_rma_requests_v1", "hybrid_rma_requests_two_sided"});
+        MPI_THREAD_MULTIPLE, "trident_hybrid_rma_requests_csr64_v2", "hybrid_rma_requests_two_sided"});
 }

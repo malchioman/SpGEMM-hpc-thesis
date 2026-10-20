@@ -256,7 +256,7 @@ accumulator.
 | `spgemm_one_sided_get` | Consumers fetch payloads from the owners' CSR windows with `MPI_Get` |
 | `spgemm_one_sided_put` | Owners push payloads into the consumers' halo windows with `MPI_Put` |
 
-The three baselines use the `prepared_halo_v2` protocol: requests, row lengths,
+The three baselines use the `prepared_halo_csr64_v3` protocol: requests, row lengths,
 offsets and buffers are prepared once; column indices and values are transferred
 again for every product. Communication timings include the transport's packing
 and synchronization work where applicable.
@@ -501,7 +501,7 @@ end-to-end product time as the primary comparison with matched inputs/resources.
 
 The reported compute throughput counts two floating-point operations per scalar
 multiply-add, using `sum_(i,k in A) nnz(B[k,:])` scalar multiplications. TSV rows
-record `benchmark_protocol`: baselines use `prepared_halo_v2`; Trident variants
+record `benchmark_protocol`: baselines use `prepared_halo_csr64_v3`; Trident variants
 have their own protocols described in the linked technical documents. Baselines
 and Trident also differ in partitioning, payloads and local accumulation, which
 must be considered when interpreting their comparison.
@@ -536,7 +536,9 @@ mpirun -np 4 ./build/trident_get --matrix matrices/cage8.mtx --partial \
 `--no-validate` skips the serial reference and comparison and records
 `validation=SKIPPED`, `max_abs_error=NA`. The final C is still gathered, and rank 0
 still retains global A and B. This removes serial validation time but does not
-remove the root-memory limit. CSR indices and MPI counts also remain int-sized.
+remove the root-memory limit. CSR offsets and nonzero counts use 64 bits; matrix
+dimensions and column indices remain 32-bit. Large MPI payloads are transferred
+in chunks; see [CSR64 support](docs/csr64.md).
 The separate `result_finite` flag checks the final C for NaN/infinity without a
 serial product. Experiment scripts reject non-finite products even when validation
 is skipped. A `SKIPPED` row is not equivalent to `PASS`. See the

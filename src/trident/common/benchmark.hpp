@@ -17,7 +17,7 @@ struct BenchmarkBackend {
     ExchangeFactory intraFactory;
     InterNodeFactory interFactory;
     int threadLevel = MPI_THREAD_FUNNELED;
-    std::string protocol = "trident_staged_csr_v1";
+    std::string protocol = "trident_staged_csr64_v2";
     std::string interTransport = "two_sided_static_cannon";
     std::string intraTransport = "trident_two_sided";
 };

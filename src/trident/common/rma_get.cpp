@@ -10,14 +10,13 @@ namespace {
 
 template <typename T>
 MPI_Win exposeBuffer(const std::vector<T>& buffer, MPI_Comm comm) {
-    mpiCount(buffer.size());
     if (buffer.size() > static_cast<std::size_t>(std::numeric_limits<MPI_Aint>::max()) / sizeof(T)) {
         throw std::overflow_error("GET window size exceeds MPI_Aint");
     }
     MPI_Win window = MPI_WIN_NULL;
     // MPI_Win_create takes a mutable pointer, but this backend only exposes remote reads.
     void* base = buffer.empty() ? nullptr : const_cast<T*>(buffer.data());
-    checkMpi(MPI_Win_create(base, static_cast<MPI_Aint>(buffer.size() * sizeof(T)), sizeof(T),
+    checkMpi(MPI_Win_create(base, csrWindowBytes<T>(buffer.size()), sizeof(T),
                             MPI_INFO_NULL, comm, &window), "MPI_Win_create(GET input)", comm);
     checkMpi(MPI_Win_lock_all(0, window), "MPI_Win_lock_all(GET input)", comm);
     return window;
@@ -34,7 +33,7 @@ GetTileTransport::~GetTileTransport() {
 }
 
 GetTileTransport::InputWindow GetTileTransport::expose(const CsrMatrix& input) {
-    InputWindow result{{input.rows, input.cols, mpiCount(input.values.size())},
+    InputWindow result{{input.rows, input.cols, checkedCsrCount(input.values.size())},
                        {input.rowPtr.data(), input.columnIndices.data(), input.values.data()}};
     checkInput(input, result);
     // With only one node every inter-node source is local, including singleton MPI jobs.
@@ -49,7 +48,7 @@ GetTileTransport::InputWindow GetTileTransport::expose(const CsrMatrix& input) {
 void GetTileTransport::checkInput(const CsrMatrix& input, const InputWindow& exposed) const {
     if (input.rows < 0 || input.cols < 0 || input.rows != exposed.shape.rows ||
         input.cols != exposed.shape.cols || input.rowPtr.size() != static_cast<std::size_t>(input.rows) + 1 ||
-        input.columnIndices.size() != input.values.size() || mpiCount(input.values.size()) != exposed.shape.nnz ||
+        input.columnIndices.size() != input.values.size() || checkedCsrCount(input.values.size()) != exposed.shape.nnz ||
         input.rowPtr.data() != exposed.bases[0] || input.columnIndices.data() != exposed.bases[1] ||
         input.values.data() != exposed.bases[2]) {
         throw std::invalid_argument("GET inputs must retain their exposed shapes, sizes and buffer addresses");
@@ -77,15 +76,11 @@ void GetTileTransport::begin(const CsrMatrix& a, const CsrMatrix& b) {
 }
 
 void GetTileTransport::getTile(CsrMatrix& tile, int source, const InputWindow& exposed) {
-    checkMpi(MPI_Get(tile.rowPtr.data(), mpiCount(tile.rowPtr.size()), MPI_INT, source, 0,
-                     mpiCount(tile.rowPtr.size()), MPI_INT, exposed.windows[0]),
-             "MPI_Get(tile pointers)", grid_.world);
-    const int nnz = mpiCount(tile.values.size());
+    csrGet(tile.rowPtr.data(), checkedCsrCount(tile.rowPtr.size()), source, 0, exposed.windows[0], grid_.world);
+    const CsrOffset nnz = checkedCsrCount(tile.values.size());
     if (nnz > 0) {
-        checkMpi(MPI_Get(tile.columnIndices.data(), nnz, MPI_INT, source, 0, nnz, MPI_INT,
-                         exposed.windows[1]), "MPI_Get(tile indices)", grid_.world);
-        checkMpi(MPI_Get(tile.values.data(), nnz, MPI_DOUBLE, source, 0, nnz, MPI_DOUBLE,
-                         exposed.windows[2]), "MPI_Get(tile values)", grid_.world);
+        csrGet(tile.columnIndices.data(), nnz, source, 0, exposed.windows[1], grid_.world);
+        csrGet(tile.values.data(), nnz, source, 0, exposed.windows[2], grid_.world);
     }
 }
 

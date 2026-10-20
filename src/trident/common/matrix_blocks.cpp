@@ -9,43 +9,29 @@ namespace trident {
 namespace {
 
 void sendMatrix(const CsrMatrix& matrix, int target, MPI_Comm comm) {
-    const std::array<int, 3> header{matrix.rows, matrix.cols, mpiCount(matrix.values.size())};
-    checkMpi(MPI_Send(header.data(), 3, MPI_INT, target, 10, comm), "MPI_Send(block header)", comm);
-    checkMpi(MPI_Send(matrix.rowPtr.data(), mpiCount(matrix.rowPtr.size()), MPI_INT, target, 11, comm),
-             "MPI_Send(block pointers)", comm);
-    checkMpi(MPI_Send(matrix.columnIndices.data(), header[2], MPI_INT, target, 12, comm),
-             "MPI_Send(block indices)", comm);
-    checkMpi(MPI_Send(matrix.values.data(), header[2], MPI_DOUBLE, target, 13, comm),
-             "MPI_Send(block values)", comm);
+    const std::array<CsrOffset, 3> header{matrix.rows, matrix.cols, checkedCsrCount(matrix.values.size())};
+    csrSend(header.data(), 3, target, 10, comm);
+    csrSend(matrix.rowPtr.data(), checkedCsrCount(matrix.rowPtr.size()), target, 11, comm);
+    csrSend(matrix.columnIndices.data(), header[2], target, 12, comm);
+    csrSend(matrix.values.data(), header[2], target, 13, comm);
 }
 
 CsrMatrix receiveMatrix(int source, MPI_Comm comm) {
-    std::array<int, 3> header{};
-    checkMpi(MPI_Recv(header.data(), 3, MPI_INT, source, 10, comm, MPI_STATUS_IGNORE),
-             "MPI_Recv(block header)", comm);
+    std::array<CsrOffset, 3> header{};
+    csrRecv(header.data(), 3, source, 10, comm);
     CsrMatrix matrix;
-    matrix.rows = header[0];
-    matrix.cols = header[1];
+    matrix.rows = checkedMatrixDimension(header[0]);
+    matrix.cols = checkedMatrixDimension(header[1]);
     matrix.rowPtr.resize(static_cast<std::size_t>(matrix.rows) + 1);
-    matrix.columnIndices.resize(header[2]);
-    matrix.values.resize(header[2]);
-    checkMpi(MPI_Recv(matrix.rowPtr.data(), mpiCount(matrix.rowPtr.size()), MPI_INT, source, 11,
-                       comm, MPI_STATUS_IGNORE), "MPI_Recv(block pointers)", comm);
-    checkMpi(MPI_Recv(matrix.columnIndices.data(), header[2], MPI_INT, source, 12, comm,
-                       MPI_STATUS_IGNORE), "MPI_Recv(block indices)", comm);
-    checkMpi(MPI_Recv(matrix.values.data(), header[2], MPI_DOUBLE, source, 13, comm, MPI_STATUS_IGNORE),
-             "MPI_Recv(block values)", comm);
+    matrix.columnIndices.resize(csrSize<int>(header[2]));
+    matrix.values.resize(csrSize<double>(header[2]));
+    csrRecv(matrix.rowPtr.data(), checkedCsrCount(matrix.rowPtr.size()), source, 11, comm);
+    csrRecv(matrix.columnIndices.data(), header[2], source, 12, comm);
+    csrRecv(matrix.values.data(), header[2], source, 13, comm);
     return matrix;
 }
 
 }  // namespace
-
-int mpiCount(std::size_t size) {
-    if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        throw std::overflow_error("Trident CSR storage and MPI counts must fit in a signed int");
-    }
-    return static_cast<int>(size);
-}
 
 MatrixBlock matrixBlock(int rows, int cols, const ProcessGrid& grid, int i, int j, int k) {
     const auto coarseRows = partitionRows(rows, grid.side).at(i);
@@ -60,13 +46,13 @@ std::vector<std::int64_t> scalarProductsByRank(const CsrMatrix& a, const CsrMatr
     // One column tile at a time limits temporary storage to O(B.rows + ranks).
     for (int j = 0; j < grid.side; ++j) {
         const auto columns = partitionRows(b.cols, grid.side)[j];
-        std::vector<int> rowDegrees(b.rows);
+        std::vector<CsrOffset> rowDegrees(b.rows);
         for (int row = 0; row < b.rows; ++row) {
             const auto begin = b.columnIndices.begin() + b.rowPtr[row];
             const auto end = b.columnIndices.begin() + b.rowPtr[row + 1];
             // Matrix Market, permutation and synthetic inputs can have unsorted columns.
             // Count stored entries exactly as the kernel does, including duplicates/zeros.
-            rowDegrees[row] = static_cast<int>(std::count_if(begin, end, [&](int column) {
+            rowDegrees[row] = static_cast<CsrOffset>(std::count_if(begin, end, [&](int column) {
                 return column >= columns.firstRow && column < columns.firstRow + columns.rows;
             }));
         }
@@ -75,8 +61,8 @@ std::vector<std::int64_t> scalarProductsByRank(const CsrMatrix& a, const CsrMatr
                 const auto rows = matrixBlock(a.rows, b.cols, grid, i, j, k).rows;
                 auto& count = work[grid.rankAt(i, j, k)];
                 for (int row = rows.firstRow; row < rows.firstRow + rows.rows; ++row) {
-                    for (int p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
-                        count += rowDegrees[a.columnIndices[p]];
+                    for (CsrOffset p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
+                        count = checkedCsrAdd(count, rowDegrees[a.columnIndices[p]], "Trident scalar products");
                     }
                 }
             }
@@ -91,14 +77,14 @@ CsrMatrix sliceBlock(const CsrMatrix& matrix, MatrixBlock block) {
     result.cols = block.cols.rows;
     result.rowPtr.push_back(0);
     for (int row = block.rows.firstRow; row < block.rows.firstRow + block.rows.rows; ++row) {
-        for (int p = matrix.rowPtr[row]; p < matrix.rowPtr[row + 1]; ++p) {
+        for (CsrOffset p = matrix.rowPtr[row]; p < matrix.rowPtr[row + 1]; ++p) {
             const int col = matrix.columnIndices[p] - block.cols.firstRow;
             if (col >= 0 && col < result.cols) {
                 result.columnIndices.push_back(col);
                 result.values.push_back(matrix.values[p]);
             }
         }
-        result.rowPtr.push_back(mpiCount(result.values.size()));
+        result.rowPtr.push_back(checkedCsrCount(result.values.size()));
     }
     return result;
 }
@@ -141,7 +127,7 @@ CsrMatrix gatherBlocks(const CsrMatrix& local, int rows, int cols, const Process
                 }
                 for (int r = 0; r < matrix.rows; ++r) {
                     auto& row = entries[block.rows.firstRow + r];
-                    for (int p = matrix.rowPtr[r]; p < matrix.rowPtr[r + 1]; ++p) {
+                    for (CsrOffset p = matrix.rowPtr[r]; p < matrix.rowPtr[r + 1]; ++p) {
                         row.emplace_back(block.cols.firstRow + matrix.columnIndices[p], matrix.values[p]);
                     }
                 }
@@ -158,7 +144,7 @@ CsrMatrix gatherBlocks(const CsrMatrix& local, int rows, int cols, const Process
             result.columnIndices.push_back(entry.first);
             result.values.push_back(entry.second);
         }
-        result.rowPtr.push_back(mpiCount(result.values.size()));
+        result.rowPtr.push_back(checkedCsrCount(result.values.size()));
     }
     return result;
 }
@@ -166,15 +152,15 @@ CsrMatrix gatherBlocks(const CsrMatrix& local, int rows, int cols, const Process
 LocalAccumulator::LocalAccumulator(int rows, int cols) : cols_(cols), rows_(rows) {}
 
 void LocalAccumulator::addProduct(const CsrMatrix& a, const CsrMatrix& b) {
-    if (a.cols != b.rows || a.rows != mpiCount(rows_.size()) || b.cols != cols_) {
+    if (a.cols != b.rows || a.rows != checkedCsrCount(rows_.size()) || b.cols != cols_) {
         throw std::invalid_argument("incompatible Trident partial product shapes");
     }
     #pragma omp parallel for schedule(runtime)
     for (int row = 0; row < a.rows; ++row) {
         auto& accumulator = rows_[row];
-        for (int p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
+        for (CsrOffset p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
             const int bRow = a.columnIndices[p];
-            for (int t = b.rowPtr[bRow]; t < b.rowPtr[bRow + 1]; ++t) {
+            for (CsrOffset t = b.rowPtr[bRow]; t < b.rowPtr[bRow + 1]; ++t) {
                 accumulator[b.columnIndices[t]] += a.values[p] * b.values[t];
             }
         }
@@ -182,7 +168,7 @@ void LocalAccumulator::addProduct(const CsrMatrix& a, const CsrMatrix& b) {
 }
 
 CsrMatrix LocalAccumulator::finish() const {
-    const int rowCount = mpiCount(rows_.size());
+    const int rowCount = checkedMatrixDimension(checkedCsrCount(rows_.size()));
     std::vector<std::vector<std::pair<int, double>>> sortedRows(rowCount);
     #pragma omp parallel for schedule(runtime)
     for (int row = 0; row < rowCount; ++row) {
@@ -198,13 +184,13 @@ CsrMatrix LocalAccumulator::finish() const {
     result.cols = cols_;
     result.rowPtr.push_back(0);
     for (const auto& row : sortedRows) {
-        result.rowPtr.push_back(mpiCount(static_cast<std::size_t>(result.rowPtr.back()) + row.size()));
+        result.rowPtr.push_back(checkedCsrAdd(result.rowPtr.back(), checkedCsrCount(row.size()), "Trident local result prefix"));
     }
-    result.columnIndices.resize(result.rowPtr.back());
-    result.values.resize(result.rowPtr.back());
+    result.columnIndices.resize(csrSize<int>(result.rowPtr.back()));
+    result.values.resize(csrSize<double>(result.rowPtr.back()));
     #pragma omp parallel for schedule(runtime)
     for (int row = 0; row < rowCount; ++row) {
-        int p = result.rowPtr[row];
+        CsrOffset p = result.rowPtr[row];
         for (const auto& entry : sortedRows[row]) {
             result.columnIndices[p] = entry.first;
             result.values[p++] = entry.second;

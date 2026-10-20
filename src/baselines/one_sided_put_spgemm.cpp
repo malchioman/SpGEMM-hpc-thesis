@@ -25,7 +25,7 @@ constexpr int kPutTargetOffsetTag = 403;
 
 struct OutgoingPutPlan {
     std::vector<int> rows;
-    std::vector<int> targetOffsets;
+    std::vector<CsrOffset> targetOffsets;
 };
 
 struct PutPlan {
@@ -75,7 +75,7 @@ void unlockAndFree(MPI_Win& window, bool locked, MPI_Comm communicator) {
     checkMpi(MPI_Win_free(&window), "MPI_Win_free", communicator);
 }
 
-int localRowNonZeros(const CsrMatrix& matrix, int localRow) {
+CsrOffset localRowNonZeros(const CsrMatrix& matrix, int localRow) {
     return matrix.rowPtr[localRow + 1] - matrix.rowPtr[localRow];
 }
 
@@ -90,7 +90,7 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
     std::vector<int> incomingCounts(ranks, 0);
     std::vector<int> outgoingCounts(ranks, 0);
     for (int peer = 0; peer < ranks; ++peer) {
-        outgoingCounts[peer] = static_cast<int>(plan.remoteBRows.plan.rowsByPeer[peer].size());
+        outgoingCounts[peer] = checkedMatrixDimension(checkedCsrCount(plan.remoteBRows.plan.rowsByPeer[peer].size()));
     }
 
     std::vector<MPI_Request> requests;
@@ -99,15 +99,9 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
         if (peer == rank) {
             continue;
         }
-        MPI_Request request = MPI_REQUEST_NULL;
-        checkMpi(MPI_Irecv(&incomingCounts[peer], 1, MPI_INT, peer, kPutRequestCountTag,
-                           communicator, &request),
-                 "MPI_Irecv(put request count)", communicator);
-        requests.push_back(request);
-        checkMpi(MPI_Isend(&outgoingCounts[peer], 1, MPI_INT, peer, kPutRequestCountTag,
-                           communicator, &request),
-                 "MPI_Isend(put request count)", communicator);
-        requests.push_back(request);
+
+        csrIrecv(&incomingCounts[peer], 1, peer, kPutRequestCountTag, communicator, requests);
+        csrIsend(&outgoingCounts[peer], 1, peer, kPutRequestCountTag, communicator, requests);
     }
     waitAll(requests, communicator);
 
@@ -122,29 +116,21 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
 
         const auto& rows = plan.remoteBRows.plan.rowsByPeer[peer];
         outgoingPacked[peer].resize(rows.size() * 2U);
-        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
-            outgoingPacked[peer][static_cast<std::size_t>(2 * index)] = rows[index];
-            outgoingPacked[peer][static_cast<std::size_t>(2 * index + 1)] =
+        for (int index = 0; index < checkedMatrixDimension(checkedCsrCount(rows.size())); ++index) {
+            outgoingPacked[peer][(2 * static_cast<std::size_t>(index))] = rows[index];
+            outgoingPacked[peer][(2 * static_cast<std::size_t>(index) + 1)] =
                 plan.remoteBRows.plan.rowToSlot.at(rows[index]);
         }
 
         incomingPacked[peer].resize(static_cast<std::size_t>(incomingCounts[peer]) * 2U);
-        MPI_Request request = MPI_REQUEST_NULL;
-        checkMpi(MPI_Irecv(dataOrNull(incomingPacked[peer]),
-                           static_cast<int>(incomingPacked[peer].size()), MPI_INT, peer,
-                           kPutRequestRowsTag, communicator, &request),
-                 "MPI_Irecv(put row requests)", communicator);
-        requests.push_back(request);
-        checkMpi(MPI_Isend(dataOrNull(outgoingPacked[peer]),
-                           static_cast<int>(outgoingPacked[peer].size()), MPI_INT, peer,
-                           kPutRequestRowsTag, communicator, &request),
-                 "MPI_Isend(put row requests)", communicator);
-        requests.push_back(request);
+
+        csrIrecv(dataOrNull(incomingPacked[peer]), checkedCsrCount(incomingPacked[peer].size()), peer, kPutRequestRowsTag, communicator, requests);
+        csrIsend(dataOrNull(outgoingPacked[peer]), checkedCsrCount(outgoingPacked[peer].size()), peer, kPutRequestRowsTag, communicator, requests);
     }
     waitAll(requests, communicator);
 
-    std::vector<std::vector<int>> incomingRowNonZeros(ranks);
-    std::vector<std::vector<int>> outgoingRowNonZeros(ranks);
+    std::vector<std::vector<CsrOffset>> incomingRowNonZeros(ranks);
+    std::vector<std::vector<CsrOffset>> outgoingRowNonZeros(ranks);
     for (int peer = 0; peer < ranks; ++peer) {
         if (peer == rank) {
             continue;
@@ -153,7 +139,7 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
         incomingRowNonZeros[peer].resize(outgoingCounts[peer]);
         outgoingRowNonZeros[peer].resize(incomingCounts[peer]);
         for (int index = 0; index < incomingCounts[peer]; ++index) {
-            const int globalRow = incomingPacked[peer][static_cast<std::size_t>(2 * index)];
+            const int globalRow = incomingPacked[peer][(2 * static_cast<std::size_t>(index))];
             if (globalRow < localBBlock.firstRow ||
                 globalRow >= localBBlock.firstRow + localBBlock.rows) {
                 fail("received an RMA put request for a non-local sparse row of B", communicator);
@@ -169,33 +155,26 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
         if (peer == rank) {
             continue;
         }
-        MPI_Request request = MPI_REQUEST_NULL;
-        checkMpi(MPI_Irecv(dataOrNull(incomingRowNonZeros[peer]), outgoingCounts[peer], MPI_INT,
-                           peer, kPutRowNnzTag, communicator, &request),
-                 "MPI_Irecv(put sparse row nnz)", communicator);
-        requests.push_back(request);
-        checkMpi(MPI_Isend(dataOrNull(outgoingRowNonZeros[peer]),
-                           static_cast<int>(outgoingRowNonZeros[peer].size()), MPI_INT, peer,
-                           kPutRowNnzTag, communicator, &request),
-                 "MPI_Isend(put sparse row nnz)", communicator);
-        requests.push_back(request);
+
+        csrIrecv(dataOrNull(incomingRowNonZeros[peer]), outgoingCounts[peer], peer, kPutRowNnzTag, communicator, requests);
+        csrIsend(dataOrNull(outgoingRowNonZeros[peer]), checkedMatrixDimension(checkedCsrCount(outgoingRowNonZeros[peer].size())), peer, kPutRowNnzTag, communicator, requests);
     }
     waitAll(requests, communicator);
 
-    int totalRemoteNonZeros = 0;
+    CsrOffset totalRemoteNonZeros = 0;
     for (int peer = 0; peer < ranks; ++peer) {
         const int peerOffset = plan.remoteBRows.plan.peerOffsets[peer];
-        for (int index = 0; index < static_cast<int>(incomingRowNonZeros[peer].size()); ++index) {
+        for (int index = 0; index < checkedMatrixDimension(checkedCsrCount(incomingRowNonZeros[peer].size())); ++index) {
             plan.remoteBRows.rowPtr[peerOffset + index] = totalRemoteNonZeros;
-            totalRemoteNonZeros += incomingRowNonZeros[peer][index];
+            totalRemoteNonZeros = checkedCsrAdd(totalRemoteNonZeros, incomingRowNonZeros[peer][index], "halo prefix");
             plan.remoteBRows.rowPtr[peerOffset + index + 1] = totalRemoteNonZeros;
         }
     }
-    plan.remoteBRows.columnIndices.assign(totalRemoteNonZeros, 0);
-    plan.remoteBRows.values.assign(totalRemoteNonZeros, 0.0);
+    plan.remoteBRows.columnIndices.assign(csrSize<int>(totalRemoteNonZeros), 0);
+    plan.remoteBRows.values.assign(csrSize<double>(totalRemoteNonZeros), 0.0);
 
-    std::vector<std::vector<int>> incomingTargetOffsets(ranks);
-    std::vector<std::vector<int>> outgoingTargetOffsets(ranks);
+    std::vector<std::vector<CsrOffset>> incomingTargetOffsets(ranks);
+    std::vector<std::vector<CsrOffset>> outgoingTargetOffsets(ranks);
     requests.clear();
     requests.reserve(2 * (ranks - 1));
     for (int peer = 0; peer < ranks; ++peer) {
@@ -205,22 +184,14 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
 
         outgoingTargetOffsets[peer].resize(outgoingCounts[peer]);
         const auto& rows = plan.remoteBRows.plan.rowsByPeer[peer];
-        for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+        for (int index = 0; index < checkedMatrixDimension(checkedCsrCount(rows.size())); ++index) {
             const int slot = plan.remoteBRows.plan.rowToSlot.at(rows[index]);
             outgoingTargetOffsets[peer][index] = plan.remoteBRows.rowPtr[slot];
         }
         incomingTargetOffsets[peer].resize(incomingCounts[peer]);
 
-        MPI_Request request = MPI_REQUEST_NULL;
-        checkMpi(MPI_Irecv(dataOrNull(incomingTargetOffsets[peer]), incomingCounts[peer], MPI_INT,
-                           peer, kPutTargetOffsetTag, communicator, &request),
-                 "MPI_Irecv(put target offsets)", communicator);
-        requests.push_back(request);
-        checkMpi(MPI_Isend(dataOrNull(outgoingTargetOffsets[peer]),
-                           static_cast<int>(outgoingTargetOffsets[peer].size()), MPI_INT, peer,
-                           kPutTargetOffsetTag, communicator, &request),
-                 "MPI_Isend(put target offsets)", communicator);
-        requests.push_back(request);
+        csrIrecv(dataOrNull(incomingTargetOffsets[peer]), incomingCounts[peer], peer, kPutTargetOffsetTag, communicator, requests);
+        csrIsend(dataOrNull(outgoingTargetOffsets[peer]), checkedMatrixDimension(checkedCsrCount(outgoingTargetOffsets[peer].size())), peer, kPutTargetOffsetTag, communicator, requests);
     }
     waitAll(requests, communicator);
 
@@ -233,8 +204,8 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
         outgoing.rows.resize(incomingCounts[peer]);
         outgoing.targetOffsets.resize(incomingCounts[peer]);
         for (int index = 0; index < incomingCounts[peer]; ++index) {
-            const int globalRow = incomingPacked[peer][static_cast<std::size_t>(2 * index)];
-            const int targetOffset = incomingTargetOffsets[peer][index];
+            const int globalRow = incomingPacked[peer][(2 * static_cast<std::size_t>(index))];
+            const CsrOffset targetOffset = incomingTargetOffsets[peer][index];
             if (globalRow < localBBlock.firstRow ||
                 globalRow >= localBBlock.firstRow + localBBlock.rows) {
                 fail("received an RMA put request for a non-local sparse row of B", communicator);
@@ -253,23 +224,19 @@ PutPlan buildPutPlan(const CsrMatrix& localMatrixA, const CsrMatrix& localMatrix
 void pushSparseRows(const std::vector<OutgoingPutPlan>& outgoingByPeer, RowBlock localBBlock,
                     const CsrMatrix& localMatrixB, MPI_Win columnWindow, MPI_Win valueWindow,
                     MPI_Comm communicator) {
-    for (int peer = 0; peer < static_cast<int>(outgoingByPeer.size()); ++peer) {
+    for (int peer = 0; peer < checkedMatrixDimension(checkedCsrCount(outgoingByPeer.size())); ++peer) {
         const auto& outgoing = outgoingByPeer[peer];
-        for (int index = 0; index < static_cast<int>(outgoing.rows.size()); ++index) {
+        for (int index = 0; index < checkedMatrixDimension(checkedCsrCount(outgoing.rows.size())); ++index) {
             const int localRow = outgoing.rows[index] - localBBlock.firstRow;
-            const int first = localMatrixB.rowPtr[localRow];
-            const int count = localMatrixB.rowPtr[localRow + 1] - first;
+            const CsrOffset first = localMatrixB.rowPtr[localRow];
+            const CsrOffset count = localMatrixB.rowPtr[localRow + 1] - first;
             if (count == 0) {
                 continue;
             }
 
-            const MPI_Aint targetOffset = static_cast<MPI_Aint>(outgoing.targetOffsets[index]);
-            checkMpi(MPI_Put(localMatrixB.columnIndices.data() + first, count, MPI_INT, peer,
-                             targetOffset, count, MPI_INT, columnWindow),
-                     "MPI_Put(B row columns)", communicator);
-            checkMpi(MPI_Put(localMatrixB.values.data() + first, count, MPI_DOUBLE, peer,
-                             targetOffset, count, MPI_DOUBLE, valueWindow),
-                     "MPI_Put(B row values)", communicator);
+            const CsrOffset targetOffset = outgoing.targetOffsets[index];
+            csrPut(localMatrixB.columnIndices.data() + first, count, peer, targetOffset, columnWindow, communicator);
+            csrPut(localMatrixB.values.data() + first, count, peer, targetOffset, valueWindow, communicator);
         }
     }
     checkMpi(MPI_Win_flush_all(columnWindow), "MPI_Win_flush_all(columns)", communicator);
@@ -317,7 +284,7 @@ int main(int argc, char** argv) {
             matrixShape = {globalMatrixA.rows, globalMatrixA.cols, globalMatrixB.rows,
                            globalMatrixB.cols};
         }
-        checkMpi(MPI_Bcast(matrixShape.data(), static_cast<int>(matrixShape.size()), MPI_INT, 0,
+        checkMpi(MPI_Bcast(matrixShape.data(), checkedMatrixDimension(checkedCsrCount(matrixShape.size())), MPI_INT, 0,
                            communicator),
                  "MPI_Bcast(matrix shape)", communicator);
 
@@ -338,13 +305,11 @@ int main(int argc, char** argv) {
         putPlan = buildPutPlan(localMatrixA, localMatrixB, bRowBlocks, bRowBlocks[rank],
                                rank, ranks, communicator);
         checkMpi(MPI_Win_create(dataOrNull(putPlan.remoteBRows.columnIndices),
-                                static_cast<MPI_Aint>(putPlan.remoteBRows.columnIndices.size()) *
-                                    sizeof(int),
+                                csrWindowBytes<int>(putPlan.remoteBRows.columnIndices.size()),
                                 sizeof(int), MPI_INFO_NULL, communicator, &columnWindow),
                  "MPI_Win_create(columns)", communicator);
         checkMpi(MPI_Win_create(dataOrNull(putPlan.remoteBRows.values),
-                                static_cast<MPI_Aint>(putPlan.remoteBRows.values.size()) *
-                                    sizeof(double),
+                                csrWindowBytes<double>(putPlan.remoteBRows.values.size()),
                                 sizeof(double), MPI_INFO_NULL, communicator, &valueWindow),
                  "MPI_Win_create(values)", communicator);
         checkMpi(MPI_Win_lock_all(MPI_MODE_NOCHECK, columnWindow), "MPI_Win_lock_all(columns)",

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 if(NOT DEFINED EXPECTED_PROTOCOL)
-    set(EXPECTED_PROTOCOL prepared_halo_v2)
+    set(EXPECTED_PROTOCOL prepared_halo_csr64_v3)
 endif()
 file(REMOVE "${RESULTS}")
 

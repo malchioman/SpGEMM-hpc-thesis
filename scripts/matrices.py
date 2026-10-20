@@ -142,8 +142,8 @@ def source_of(entry):
         return source
     suffix = "{}/{}.tar.gz".format(entry["group"], entry["id"])
     return dict(format="tar.gz", urls=[
-        "https://sparse-files.engr.tamu.edu/MM/" + suffix,
-        "https://www.cise.ufl.edu/research/sparse/MM/" + suffix],
+        "https://www.cise.ufl.edu/research/sparse/MM/" + suffix,
+        "https://sparse-files.engr.tamu.edu/MM/" + suffix],
         page="https://sparse.tamu.edu/{}/{}".format(entry["group"], entry["id"]))
 
 

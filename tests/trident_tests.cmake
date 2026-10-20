@@ -122,7 +122,7 @@ foreach(input_case IN ITEMS hierarchical invalid_grid invalid_logical)
             "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}" "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
             "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
             "-DBENCHMARK=$<TARGET_FILE:trident_hybrid>" "-DINPUT_CASE=${input_case}"
-            "-DEXPECTED_PROTOCOL=trident_hybrid_rma_requests_v1"
+            "-DEXPECTED_PROTOCOL=trident_hybrid_rma_requests_csr64_v2"
             "-DEXPECTED_INTER_TRANSPORT=hybrid_rma_requests_two_sided"
             "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/trident_hybrid_${input_case}.tsv"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_trident_cli.cmake)
@@ -132,7 +132,7 @@ foreach(input_case IN ITEMS hierarchical invalid_grid invalid_logical)
             "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}" "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
             "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
             "-DBENCHMARK=$<TARGET_FILE:trident_get>" "-DINPUT_CASE=${input_case}"
-            "-DEXPECTED_PROTOCOL=trident_get_csr_v1"
+            "-DEXPECTED_PROTOCOL=trident_get_csr64_v2"
             "-DEXPECTED_INTER_TRANSPORT=one_sided_get"
             "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/trident_get_${input_case}.tsv"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_trident_cli.cmake)
@@ -142,7 +142,7 @@ foreach(input_case IN ITEMS hierarchical invalid_grid invalid_logical)
             "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}" "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
             "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
             "-DBENCHMARK=$<TARGET_FILE:trident_get_pipeline>" "-DINPUT_CASE=${input_case}"
-            "-DEXPECTED_PROTOCOL=trident_get_pipeline_csr_v1"
+            "-DEXPECTED_PROTOCOL=trident_get_pipeline_csr64_v2"
             "-DEXPECTED_INTER_TRANSPORT=one_sided_get_pipeline"
             "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/trident_get_pipeline_${input_case}.tsv"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_trident_cli.cmake)
@@ -152,7 +152,7 @@ foreach(input_case IN ITEMS hierarchical invalid_grid invalid_logical)
             "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}" "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
             "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
             "-DBENCHMARK=$<TARGET_FILE:trident_put>" "-DINPUT_CASE=${input_case}"
-            "-DEXPECTED_PROTOCOL=trident_put_staged_csr_v1"
+            "-DEXPECTED_PROTOCOL=trident_put_staged_csr64_v2"
             "-DEXPECTED_INTER_TRANSPORT=one_sided_put"
             "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/trident_put_${input_case}.tsv"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_trident_cli.cmake)

@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
     const auto matrix = readMatrixMarket(path.string());
     std::filesystem::remove(path);
     // The input representation is intentionally preserved, not canonicalized.
-    if (matrix.rowPtr != std::vector<int>{0, 3} || matrix.columnIndices != std::vector<int>{1, 0, 1} ||
+    if (matrix.rowPtr != std::vector<CsrOffset>{0, 3} || matrix.columnIndices != std::vector<int>{1, 0, 1} ||
         matrix.values != std::vector<double>{1, 0, -1}) return 1;
     return 0;
 }

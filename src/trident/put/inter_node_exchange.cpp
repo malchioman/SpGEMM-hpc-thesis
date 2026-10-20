@@ -11,13 +11,12 @@ namespace {
 
 template <typename T>
 MPI_Win exposeBuffer(std::vector<T>& buffer, MPI_Comm comm) {
-    mpiCount(buffer.size());
     if (buffer.size() > static_cast<std::size_t>(std::numeric_limits<MPI_Aint>::max()) / sizeof(T)) {
         throw std::overflow_error("PUT window size exceeds MPI_Aint");
     }
     MPI_Win window = MPI_WIN_NULL;
     checkMpi(MPI_Win_create(buffer.empty() ? nullptr : buffer.data(),
-                            static_cast<MPI_Aint>(buffer.size() * sizeof(T)), sizeof(T),
+                            csrWindowBytes<T>(buffer.size()), sizeof(T),
                             MPI_INFO_NULL, comm, &window), "MPI_Win_create(PUT receiver)", comm);
     checkMpi(MPI_Win_lock_all(0, window), "MPI_Win_lock_all(PUT receiver)", comm);
     return window;
@@ -26,7 +25,7 @@ MPI_Win exposeBuffer(std::vector<T>& buffer, MPI_Comm comm) {
 void checkShape(const CsrMatrix& input, TileShape shape) {
     if (input.rows < 0 || input.cols < 0 || input.rows != shape.rows || input.cols != shape.cols ||
         input.rowPtr.size() != static_cast<std::size_t>(input.rows) + 1 ||
-        input.columnIndices.size() != input.values.size() || mpiCount(input.values.size()) != shape.nnz) {
+        input.columnIndices.size() != input.values.size() || checkedCsrCount(input.values.size()) != shape.nnz) {
         throw std::invalid_argument("PUT inputs must retain their planned shapes and CSR array sizes");
     }
 }
@@ -36,8 +35,8 @@ void checkShape(const CsrMatrix& input, TileShape shape) {
 PutInterNodeExchange::PutInterNodeExchange(const ProcessGrid& grid, const ExecutionPlan& plan,
                                          const CsrMatrix& a, const CsrMatrix& b, ProductWorkspace& workspace)
     : grid_(grid), plan_(plan), workspace_(workspace),
-      aShape_{a.rows, a.cols, mpiCount(a.values.size())},
-      bShape_{b.rows, b.cols, mpiCount(b.values.size())} {
+      aShape_{a.rows, a.cols, checkedCsrCount(a.values.size())},
+      bShape_{b.rows, b.cols, checkedCsrCount(b.values.size())} {
     checkInputs(a, b);
     aWindow_ = expose(workspace_.a, true);
     bWindow_ = expose(workspace_.b, false);
@@ -102,15 +101,11 @@ void PutInterNodeExchange::begin(const CsrMatrix& a, const CsrMatrix& b) {
 }
 
 void PutInterNodeExchange::putTile(const CsrMatrix& tile, int target, const ReceiveWindow& receiver) {
-    checkMpi(MPI_Put(tile.rowPtr.data(), mpiCount(tile.rowPtr.size()), MPI_INT, target, 0,
-                     mpiCount(tile.rowPtr.size()), MPI_INT, receiver.windows[0]),
-             "MPI_Put(tile pointers)", grid_.world);
-    const int nnz = mpiCount(tile.values.size());
+    csrPut(tile.rowPtr.data(), checkedCsrCount(tile.rowPtr.size()), target, 0, receiver.windows[0], grid_.world);
+    const CsrOffset nnz = checkedCsrCount(tile.values.size());
     if (nnz > 0) {
-        checkMpi(MPI_Put(tile.columnIndices.data(), nnz, MPI_INT, target, 0, nnz, MPI_INT,
-                         receiver.windows[1]), "MPI_Put(tile indices)", grid_.world);
-        checkMpi(MPI_Put(tile.values.data(), nnz, MPI_DOUBLE, target, 0, nnz, MPI_DOUBLE,
-                         receiver.windows[2]), "MPI_Put(tile values)", grid_.world);
+        csrPut(tile.columnIndices.data(), nnz, target, 0, receiver.windows[1], grid_.world);
+        csrPut(tile.values.data(), nnz, target, 0, receiver.windows[2], grid_.world);
     }
 }
 

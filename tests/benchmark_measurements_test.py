@@ -30,6 +30,8 @@ spec.loader.exec_module(runner)
 
 class MeasurementsTest(unittest.TestCase):
     def check_measurements(self, row, variant):
+        self.assertEqual(row["csr_offset_bits"], "64")
+        self.assertTrue(1 <= int(row["mpi_chunk_limit"]) <= 2147483647)
         self.assertEqual(row["validation"], "PASS")
         self.assertEqual(row["result_finite"], "1")
         total = float(row["full_product_seconds"])

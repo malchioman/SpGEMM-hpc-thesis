@@ -65,9 +65,9 @@ std::vector<std::int64_t> rowPartitionWork(const CsrMatrix& a, const CsrMatrix& 
     for (int rank = 0; rank < ranks; ++rank) {
         const auto block = blocks[rank];
         for (int row = block.firstRow; row < block.firstRow + block.rows; ++row) {
-            for (int p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
+            for (CsrOffset p = a.rowPtr[row]; p < a.rowPtr[row + 1]; ++p) {
                 const int inner = a.columnIndices[p];
-                work[rank] += b.rowPtr[inner + 1] - b.rowPtr[inner];
+                work[rank] = checkedCsrAdd(work[rank], b.rowPtr[inner + 1] - b.rowPtr[inner], "rank scalar products");
             }
         }
     }
@@ -93,7 +93,7 @@ BenchmarkMetrics collectBenchmarkMetrics(
         std::accumulate(work.begin(), work.end(), std::int64_t{0}) != totalWork) {
         throw std::runtime_error("rank workload does not match the global scalar-product count");
     }
-    BenchmarkMetrics metrics;
+    BenchmarkMetrics metrics{{"csr_offset_bits", "64"}, {"mpi_chunk_limit", number(mpiChunkLimit)}};
     appendRowMetrics(metrics, "a", globalA);
     appendRowMetrics(metrics, "b", globalB);
     appendRowMetrics(metrics, "c", globalC);
