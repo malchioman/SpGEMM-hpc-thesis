@@ -323,6 +323,20 @@ foreach(target_name IN ITEMS spgemm_two_sided spgemm_one_sided_get spgemm_one_si
         )
         set_tests_properties(${target_name}_no_validate_${input_case} PROPERTIES TIMEOUT 30)
     endforeach()
+    foreach(input_case IN ITEMS rectangular empty cancellation overflow)
+        add_test(NAME ${target_name}_partial_${input_case}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
+                    "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+                    "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}"
+                    "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+                    "-DBENCHMARK=$<TARGET_FILE:${target_name}>"
+                    "-DDATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+                    "-DINPUT_CASE=${input_case}"
+                    "-DRESULTS_FILE=${CMAKE_CURRENT_BINARY_DIR}/${target_name}_partial_${input_case}.tsv"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_partial_validation.cmake)
+        set_tests_properties(${target_name}_partial_${input_case} PROPERTIES TIMEOUT 35 PROCESSORS 2)
+    endforeach()
     foreach(input_case IN ITEMS reuse_a explicit_b synthetic)
         add_test(
             NAME ${target_name}_matrix_sources_${input_case}
@@ -356,7 +370,7 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(matrix_tools PROPERTIES TIMEOUT 60)
     add_test(NAME experiment_scripts
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/experiment_scripts_test.py)
-    set_tests_properties(experiment_scripts PROPERTIES TIMEOUT 120)
+    set_tests_properties(experiment_scripts PROPERTIES TIMEOUT 240)
     add_test(NAME sbatchman_scripts
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/sbatchman_scripts_test.py)
     set_tests_properties(sbatchman_scripts PROPERTIES TIMEOUT 30)

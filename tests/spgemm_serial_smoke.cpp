@@ -35,6 +35,7 @@ bool checkDenseOracle() {
         const auto a = input(seed % 8, (seed * 3) % 7, seed);
         const auto b = input(a.cols, (seed * 5) % 9, seed + 1);
         const auto product = serialSpgemm(a, b);
+        if (!validateProduct(a, b, product, ValidationMode::Partial).passed) return false;
         const auto da = dense(a), db = dense(b), dc = dense(product);
         if (product.rows != a.rows || product.cols != b.cols) return false;
         for (int i = 0; i < a.rows; ++i) {

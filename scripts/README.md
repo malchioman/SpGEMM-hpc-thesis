@@ -96,7 +96,7 @@ bash scripts/run_all.sh --help
 | `campaign_repeats` | `1` | Complete workflow repetitions for `run_all.sh`; ignored by individual-stage scripts |
 | `warmup`, `repeats`, `trials` | `2`, `10`, `5` | Within each launch: warmup and product sampling; not independent process launches |
 | `schedule`, `chunk` | `guided`, `64` | Same OpenMP settings across variants |
-| `validate` | `false` | Main campaigns skip the serial reference; use `--validate` to enable it |
+| `validate` | `false` | `true` for full validation, `"partial"` for row-nnz comparison, `false` to skip; CLI: `--validate`, `--partial`, `--no-validate` |
 | `seed` | `42` | Must match prepared permutation manifests |
 | `matrices` | `["all"]` | Ten main inputs, or an explicit list of catalogue names |
 | `pilot_matrices` | `["cage8"]` | Small correctness inputs; override with `--pilot-matrices` |
@@ -104,8 +104,14 @@ bash scripts/run_all.sh --help
 | `variants` | All eight | Subset accepted via `--variants trident_get trident_get_pipeline`, for example |
 | `timeout` | `0` | Per-launch limit in seconds; zero uses no additional timeout |
 
-The pilot always validates, uses one independent launch per case/configuration,
+The pilot always performs full validation, uses one independent launch per case/configuration,
 zero warmups, one repeat and one trial. It is excluded from both analysis exports.
+`--local-check` also keeps full validation. For main campaigns, `--partial` compares
+each row's nnz with a serial reference computed one row at a time. It avoids storing
+a second full product, but still performs the serial arithmetic outside the timers.
+It records `PARTIAL_PASS`/`PARTIAL_FAIL` and `max_abs_error=NA`; matching counts do not
+validate column indices or numerical values. Successful partial results retain their
+status in phase exports; failed or non-finite results are rejected.
 Use `--runs` to collect more independent MPI launches without repeating the whole
 workflow. For example, `--runs 5 --repeats 10 --trials 5` appends five observations
 per input pair, resource configuration and implementation; each observation
