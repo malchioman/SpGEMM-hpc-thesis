@@ -11,6 +11,7 @@
   "schedule": "guided",
   "chunk": 64,
   "validate": false,
+  "partial_cache": null,
   "seed": 42,
   "matrices": ["all"],
   "pilot_matrices": ["cage8"],

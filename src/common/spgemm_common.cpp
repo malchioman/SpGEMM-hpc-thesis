@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -53,6 +54,7 @@ void printUsage(const std::string& programName, const std::string& defaultResult
         << "                       Without --matrix-b, requires square A and computes A*A\n"
         << "  --matrix-b PATH      Matrix Market coordinate input for B\n"
         << "  --partial            Compare only row nnz counts with a streamed serial reference\n"
+        << "  --partial-cache DIR  Require a prepared partial reference (only with --partial)\n"
         << "  --no-validate        Skip serial reference and result comparison (default: full)\n"
         << "  --results PATH       TSV output path (default: " << defaultResultsPath << ")\n"
         << "  --experiment TAG     Experiment label stored in the TSV (default: manual)\n"
@@ -217,8 +219,14 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
         }
 
         if (argument == "--schedule" || argument == "--matrix" || argument == "--matrix-a" ||
-            argument == "--matrix-b" || argument == "--results" || argument == "--experiment") {
+            argument == "--matrix-b" || argument == "--results" || argument == "--experiment" ||
+            argument == "--partial-cache") {
             const std::string value = argv[++index];
+            if (argument == "--partial-cache") {
+                if (value.empty()) throw std::invalid_argument("--partial-cache requires a directory");
+                options.partialCacheDirectory = value;
+                continue;
+            }
             if (argument == "--matrix") {
                 options.matrixAPath = value;
                 options.matrixBPath = value;
@@ -283,6 +291,8 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
     if (options.bNonZerosPerRow > options.bCols) {
         throw std::invalid_argument("--b-nnz-per-row cannot exceed --b-cols");
     }
+    if (!options.partialCacheDirectory.empty() && options.validationMode != ValidationMode::Partial)
+        throw std::invalid_argument("--partial-cache requires --partial");
     return options;
 }
 
@@ -514,8 +524,42 @@ const char* ValidationResult::status() const {
     return passed ? "PASS" : "FAIL";
 }
 
+PartialReference buildPartialReference(const CsrMatrix& matrixA, const CsrMatrix& matrixB) {
+    validateMultiplicationDimensions(matrixA, matrixB);
+    PartialReference reference{matrixA.rows, matrixB.cols, true, {}};
+    reference.rowNnz.resize(static_cast<std::size_t>(matrixA.rows));
+    forEachSerialProductRow(matrixA, matrixB, [&](int row, const auto& accumulator) {
+        CsrOffset count = 0;
+        for (const auto& entry : accumulator) {
+            if (!std::isfinite(entry.second)) reference.finite = false;
+            if (entry.second != 0.0) ++count;
+        }
+        reference.rowNnz[row] = count;
+    });
+    return reference;
+}
+
+ValidationResult comparePartialReference(const PartialReference& reference, const CsrMatrix& result) {
+    ValidationResult validation;
+    validation.mode = ValidationMode::Partial;
+    if (result.rows != reference.rows || result.cols != reference.cols) {
+        validation.passed = false;
+        return validation;
+    }
+    const bool resultFinite = std::all_of(result.values.begin(), result.values.end(),
+                                          [](double value) { return std::isfinite(value); });
+    validation.passed = reference.finite && resultFinite;
+    for (int row = 0; row < reference.rows; ++row) {
+        if (reference.rowNnz.at(row) != result.rowPtr.at(row + 1) - result.rowPtr.at(row))
+            ++validation.rowNnzMismatches;
+    }
+    validation.passed = validation.passed && validation.rowNnzMismatches == 0;
+    return validation;
+}
+
 ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
-                                 const CsrMatrix& result, ValidationMode mode) {
+                                 const CsrMatrix& result, ValidationMode mode,
+                                 const std::string& partialCacheDirectory) {
     ValidationResult validation;
     validation.mode = mode;
     if (mode == ValidationMode::None) return validation;
@@ -529,19 +573,29 @@ ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matr
         validation.passed = false;
         return validation;
     }
-    validation.passed = std::all_of(result.values.begin(), result.values.end(),
-                                    [](double value) { return std::isfinite(value); });
-    forEachSerialProductRow(matrixA, matrixB, [&](int row, const auto& accumulator) {
-        CsrOffset referenceNnz = 0;
-        for (const auto& entry : accumulator) {
-            if (!std::isfinite(entry.second)) validation.passed = false;
-            if (entry.second != 0.0) ++referenceNnz;
-        }
-        if (referenceNnz != result.rowPtr[row + 1] - result.rowPtr[row]) {
-            ++validation.rowNnzMismatches;
-        }
-    });
-    validation.passed = validation.passed && validation.rowNnzMismatches == 0;
+    using Clock = std::chrono::steady_clock;
+    const auto seconds = [](Clock::time_point start) {
+        return std::chrono::duration<double>(Clock::now() - start).count();
+    };
+    ValidationDiagnostics diagnostics;
+    PartialReference reference;
+    auto start = Clock::now();
+    if (partialCacheDirectory.empty()) {
+        diagnostics.source = "regenerated";
+        reference = buildPartialReference(matrixA, matrixB);
+        diagnostics.buildSeconds = seconds(start);
+    } else {
+        diagnostics.source = "reused";
+        diagnostics.key = partialReferenceKey(matrixA, matrixB);
+        diagnostics.identitySeconds = seconds(start);
+        start = Clock::now();
+        reference = readPartialReference(partialCacheDirectory, diagnostics.key, matrixA.rows, matrixB.cols);
+        diagnostics.readSeconds = seconds(start);
+    }
+    start = Clock::now();
+    validation = comparePartialReference(reference, result);
+    diagnostics.compareSeconds = seconds(start);
+    printValidationDiagnostics(diagnostics);
     return validation;
 }
 
