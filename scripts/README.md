@@ -293,6 +293,13 @@ relative, so existing verified inputs can be reused without downloading them aga
 
 ## Checks
 
+For reusable partial-validation references, see
+[the cache runbook](../docs/partial-validation-cache.md). The optional
+`--partial-cache DIR` / `partial_cache` configuration requires a prepared reference
+and leaves Full pilots unchanged. `prepare_cresco_cached.py` creates and builds a
+new frozen ten-sample campaign on a compute node, with one reference job per pair;
+it never submits jobs or modifies an existing campaign.
+
 ```bash
 python3 tests/matrix_tools_test.py
 python3 tests/experiment_scripts_test.py

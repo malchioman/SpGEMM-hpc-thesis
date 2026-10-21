@@ -45,6 +45,11 @@ int main() {
         }
         expectRejected("--partial", "--no-validate");
         expectRejected("--no-validate", "--partial");
+        expectRejected("--partial-cache", "cache");
+        expectRejected("--partial-cache", "");
+        if (parseArguments({"--partial", "--partial-cache", "cache"}).partialCacheDirectory != "cache" ||
+            parseArguments({"--partial-cache", "cache", "--partial"}).validationMode != ValidationMode::Partial)
+            throw std::runtime_error("partial cache options not preserved");
         const std::vector<std::pair<std::string, int Options::*>> positiveOptions{
             {"--rows", &Options::rows}, {"--cols", &Options::cols},
             {"--b-cols", &Options::bCols}, {"--nnz-per-row", &Options::nonZerosPerRow},

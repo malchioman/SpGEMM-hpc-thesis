@@ -194,7 +194,8 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
         const auto metrics = collectBenchmarkMetrics(globalA, globalB, result, a, b, product.matrix,
                                                      work, grid.world);
         if (grid.rank == 0) {
-            const auto validation = validateProduct(globalA, globalB, result, options.validationMode);
+            const auto validation = validateProduct(globalA, globalB, result, options.validationMode,
+                                                    options.partialCacheDirectory);
             exitCode = validation.passed ? EXIT_SUCCESS : EXIT_FAILURE;
             std::array<double, 5> p90{};
             for (std::size_t i = 0; i < p90.size(); ++i) p90[i] = percentile90(samples[i]);

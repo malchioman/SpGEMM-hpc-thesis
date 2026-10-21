@@ -584,6 +584,7 @@ measurements are needed to assess communication costs and scaling.
 | [Trident GET Pipeline](docs/trident_get_pipeline.md) | Prefetch scheduling, double buffering and timing interpretation |
 | [Trident PUT](docs/trident_put.md) | Push protocol and stage synchronization |
 | [Experiment plan](docs/experiments.md) | Proposed comparisons, matrix inputs and measurement methodology |
+| [Partial validation cache](docs/partial-validation-cache.md) | Numeric reference reuse, format, diagnostics and CRESCO preparation |
 | [Script guide](scripts/README.md) | Build, preparation, experiments and analysis options |
 | [SbatchMan guide](scripts/sbatchman/README.md) | Slurm and OpenPBS/PBS Pro setup and job submission |
 | [Scientific and technical sources](docs/sources.md) | MPI/OpenMP standards, Matrix Market and SpGEMM literature |

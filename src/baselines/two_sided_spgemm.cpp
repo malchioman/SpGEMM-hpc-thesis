@@ -183,7 +183,7 @@ int main(int argc, char** argv) {
 
         if (rank == 0) {
             const auto validation = validateProduct(globalMatrixA, globalMatrixB, globalResult,
-                                                     options.validationMode);
+                                                     options.validationMode, options.partialCacheDirectory);
             exitCode = validation.passed ? EXIT_SUCCESS : EXIT_FAILURE;
             const double floatingPointOperations =
                 2.0 * static_cast<double>(scalarMultiplicationCount(globalMatrixA, globalMatrixB));

@@ -92,7 +92,7 @@ def options(argv=None):
     for key in ("ranks-per-node", "threads", "cpus-per-rank", "runs", "warmup", "repeats",
                 "trials", "chunk", "seed", "timeout"):
         parser.add_argument("--" + key, type=int)
-    for key in ("build-dir", "matrix-dir", "results-dir", "mpi-launcher", "hostfile", "schedule"):
+    for key in ("build-dir", "matrix-dir", "results-dir", "mpi-launcher", "hostfile", "schedule", "partial-cache"):
         parser.add_argument("--" + key)
     parser.add_argument("--mpi-arg", action="append", help="extra Open MPI token; use --mpi-arg=VALUE")
     group = parser.add_mutually_exclusive_group()
@@ -161,6 +161,10 @@ def options(argv=None):
         raise ValueError("mpi_args cannot override ranks, hosts, mapping or binding; use the dedicated options")
     for key in ("build_dir", "matrix_dir", "results_dir"):
         setattr(cfg, key, repo_path(getattr(cfg, key)))
+    if cfg.partial_cache is not None:
+        if not isinstance(cfg.partial_cache, str) or not cfg.partial_cache:
+            raise ValueError("partial_cache must be a directory or null")
+        cfg.partial_cache = repo_path(cfg.partial_cache)
     if cfg.local_check:
         cfg.validate = True
         if cfg.hostfile:
@@ -316,6 +320,8 @@ def command(cfg, action, case, variant, nodes, raw_path):
         cmd += ["--logical-node-size", str(cfg.ranks_per_node)]
     if validate == "partial":
         cmd += ["--partial"]
+        if cfg.partial_cache:
+            cmd += ["--partial-cache", str(cfg.partial_cache)]
     elif not validate:
         cmd += ["--no-validate"]
     return cmd

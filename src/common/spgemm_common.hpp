@@ -5,6 +5,7 @@
 
 #include "csr_matrix.hpp"
 #include "mpi_large.hpp"
+#include "partial_reference.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -38,6 +39,7 @@ struct Options {
     std::string schedule = "guided";
     std::string matrixAPath;
     std::string matrixBPath;
+    std::string partialCacheDirectory;
     std::string resultsPath;
     std::string experiment = "manual";
 };
@@ -74,7 +76,9 @@ bool validationPassed(double maxAbsoluteError);
 // Partial validation computes one serial row at a time, drops exact zeros and compares
 // row nnz counts. It rejects non-finite results but does not compare columns or values.
 ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
-                                 const CsrMatrix& result, ValidationMode mode);
+                                 const CsrMatrix& result, ValidationMode mode,
+                                 const std::string& partialCacheDirectory = "");
+ValidationResult comparePartialReference(const PartialReference& reference, const CsrMatrix& result);
 double maxRankValue(double value, MPI_Comm communicator);
 double maxElapsed(double start, MPI_Comm communicator);
 double percentile90(std::vector<double> samples);

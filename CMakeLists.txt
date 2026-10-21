@@ -12,6 +12,19 @@ add_compile_definitions(SPGEMM_MPI_CHUNK_LIMIT=${SPGEMM_MPI_CHUNK_LIMIT})
 find_package(MPI REQUIRED COMPONENTS CXX)
 find_package(OpenMP REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
+# Conservative automatic invalidation on reader/reference source or toolchain changes.
+set(reference_identity "partial-reference-v1;${CMAKE_SYSTEM_PROCESSOR};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE};${CMAKE_CXX_FLAGS_DEBUG};${CMAKE_CXX_FLAGS_RELWITHDEBINFO};${CMAKE_CXX_FLAGS_MINSIZEREL};${OpenMP_CXX_FLAGS};${CMAKE_BUILD_TYPE}")
+foreach(source IN ITEMS src/common/spgemm_common.cpp src/common/spgemm_common.hpp
+        src/common/partial_reference.cpp src/common/partial_reference.hpp
+        src/common/matrix_market.cpp src/common/matrix_market.hpp src/common/csr_matrix.hpp CMakeLists.txt)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" source_hash)
+    string(APPEND reference_identity ";${source_hash}")
+endforeach()
+string(SHA256 SPGEMM_REFERENCE_BUILD_ID "${reference_identity}")
+configure_file(src/common/reference_build.hpp.in generated/reference_build.hpp @ONLY)
 
 function(enable_project_warnings target_name)
     if(MSVC)
@@ -30,12 +43,19 @@ enable_project_warnings(matrix_market)
 
 add_library(spgemm_support STATIC
     src/common/spgemm_common.cpp
+    src/common/partial_reference.cpp
     src/common/benchmark_metrics.cpp
 )
 target_compile_features(spgemm_support PUBLIC cxx_std_17)
 target_include_directories(spgemm_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/common)
-target_link_libraries(spgemm_support PUBLIC matrix_market MPI::MPI_CXX OpenMP::OpenMP_CXX)
+target_include_directories(spgemm_support PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_compile_definitions(spgemm_support PRIVATE SPGEMM_REFERENCE_CONFIGURATION="$<CONFIG>")
+target_link_libraries(spgemm_support PUBLIC matrix_market MPI::MPI_CXX OpenMP::OpenMP_CXX OpenSSL::Crypto)
 enable_project_warnings(spgemm_support)
+
+add_executable(prepare_partial_reference src/common/prepare_partial_reference.cpp)
+target_link_libraries(prepare_partial_reference PRIVATE spgemm_support)
+enable_project_warnings(prepare_partial_reference)
 
 add_library(spgemm_baseline_support STATIC
     src/baselines/spgemm_exchange.cpp
@@ -149,6 +169,10 @@ target_link_libraries(spgemm_options_smoke PRIVATE spgemm_support)
 enable_project_warnings(spgemm_options_smoke)
 
 enable_testing()
+add_executable(partial_reference_test tests/partial_reference_test.cpp)
+target_link_libraries(partial_reference_test PRIVATE spgemm_support)
+enable_project_warnings(partial_reference_test)
+add_test(NAME partial_reference COMMAND partial_reference_test ${CMAKE_CURRENT_BINARY_DIR}/reference-unit-cache)
 add_executable(csr_large_counts tests/csr_large_counts.cpp)
 target_link_libraries(csr_large_counts PRIVATE spgemm_support)
 enable_project_warnings(csr_large_counts)
@@ -360,6 +384,10 @@ include(tests/trident_tests.cmake)
 # Optional Python tooling tests; building/running the C++ benchmarks does not require Python.
 find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME partial_cache_mpi
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/partial_cache_mpi_test.py
+                --build-dir ${CMAKE_CURRENT_BINARY_DIR} --mpi-launcher ${MPIEXEC_EXECUTABLE})
+    set_tests_properties(partial_cache_mpi PROPERTIES TIMEOUT 240 PROCESSORS 2)
     add_test(NAME benchmark_measurements
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_measurements_test.py
                 --build-dir ${CMAKE_CURRENT_BINARY_DIR} --mpi-launcher ${MPIEXEC_EXECUTABLE}
