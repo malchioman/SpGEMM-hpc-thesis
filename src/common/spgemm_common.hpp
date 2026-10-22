@@ -46,6 +46,9 @@ struct Options {
     std::string matrixAPath;
     std::string matrixBPath;
     std::string partialCacheDirectory;
+    // BEGIN full-reference-cache-v1
+    std::string fullCacheDirectory;
+    // END full-reference-cache-v1
     std::string resultsPath;
     std::string experiment = "manual";
 };
@@ -83,7 +86,8 @@ bool validationPassed(double maxAbsoluteError);
 // row nnz counts. It rejects non-finite results but does not compare columns or values.
 ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                                  const CsrMatrix& result, ValidationMode mode,
-                                 const std::string& partialCacheDirectory = "");
+                                 const std::string& partialCacheDirectory = "",
+                                 const std::string& fullCacheDirectory = "");
 ValidationResult comparePartialReference(const PartialReference& reference, const CsrMatrix& result);
 double maxRankValue(double value, MPI_Comm communicator);
 double maxElapsed(double start, MPI_Comm communicator);

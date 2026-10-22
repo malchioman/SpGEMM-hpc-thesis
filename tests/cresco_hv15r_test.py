@@ -27,7 +27,9 @@ class RecoveryTest(unittest.TestCase):
         snapshot = self.campaign / 'metadata/source'
         common = snapshot / 'src/common/spgemm_common.cpp'
         common.write_text(recovery.original_common(common.read_text()), encoding='utf-8')
-        for relative in ('common/spgemm_common.hpp', 'trident/common/benchmark.cpp'):
+        for relative in ('common/spgemm_common.hpp', 'trident/common/benchmark.cpp',
+                         'baselines/two_sided_spgemm.cpp', 'baselines/one_sided_get_spgemm.cpp',
+                         'baselines/one_sided_put_spgemm.cpp'):
             path = snapshot / 'src' / relative
             path.write_text(recovery.original_metadata(path.read_text()), encoding='utf-8')
         cmake = snapshot / 'CMakeLists.txt'
@@ -42,7 +44,12 @@ class RecoveryTest(unittest.TestCase):
             cfg.update(mpi_launcher=sys.executable,
                        mpi_args=[str(REPO / 'tests/fixtures/mock_experiment_mpi.py')])
             ten.write(path, cfg)
-        for name in manifest['sha256']:
+        for relative in recovery.CACHE_SOURCES:
+            (snapshot / 'src' / relative).unlink()
+        for name in list(manifest['sha256']):
+            if not (self.campaign / name).exists():
+                del manifest['sha256'][name]
+                continue
             manifest['sha256'][name] = ten.digest(self.campaign / name)
         for i, job in enumerate(manifest['jobs']):
             ten.write(self.campaign / 'submission' / (job['key'] + '.json'), dict(job_id=str(99001 + i)))
@@ -59,6 +66,12 @@ class RecoveryTest(unittest.TestCase):
             if command[0] == 'sacct':
                 output = ''.join('%d|%s|\n' % (99001 + i, self.state) for i in range(80))
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
+            if Path(command[0]).name == 'prepare_full_reference':
+                key = ('a' if 'permuted' not in command[2] else 'b') * 64
+                path = self.root / 'references' / (key + '.sfull')
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b'SPFR0001' + key.encode('ascii') + b'0' * 104)
+                return subprocess.CompletedProcess(command, 0, stdout='validation_reference_key=' + key + '\n', stderr='')
             if command[0] in ('ctest', 'sbatch'):
                 return subprocess.CompletedProcess(command, 0, stdout=str(70000 + len(self.calls)) + '\n', stderr='')
             return REAL_RUN(command, **kwargs)
@@ -69,13 +82,16 @@ class RecoveryTest(unittest.TestCase):
 
         def build(source, directory):
             directory.mkdir()
-            for variant in recovery.VARIANTS:
+            for variant in (*recovery.VARIANTS, 'prepare_full_reference'):
                 (directory / variant).write_text('numeric recovery binary')
 
         with patch.object(recovery.cached, 'build', side_effect=build), \
                 patch.object(recovery, 'compiler_settings', return_value={'compiler': 'same'}), \
                 contextlib.redirect_stdout(io.StringIO()):
             recovery.prepare(REPO, self.campaign, self.root)
+        with contextlib.redirect_stdout(io.StringIO()):
+            for action in recovery.ACTIONS:
+                recovery.reference(self.root, action)
 
     def run_probe(self, action='strong_scaling'):
         with patch.dict(os.environ, dict(SLURM_JOB_NUM_NODES='4', SLURM_NTASKS='8',
@@ -83,6 +99,49 @@ class RecoveryTest(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()):
             key = 'n4-trident_two_sided' if action == 'strong_scaling' else 'n4-permutation-trident_two_sided'
             recovery.run(self.root, key)
+
+    def test_missing_corrupt_reference_and_generator_failure_block_recovery(self):
+        receipt = self.root / 'reference-ready/strong_scaling.json'
+        receipt.unlink()
+        with self.assertRaisesRegex(ValueError, 'reference not ready'):
+            recovery.submit(self.root)
+        with self.assertRaisesRegex(ValueError, 'reference not ready'):
+            self.run_probe()
+        failed = subprocess.CompletedProcess([], 1, stdout='', stderr='disk full')
+        original_run = recovery.subprocess.run
+        def fail_generator(command, **kwargs):
+            if Path(command[0]).name == 'prepare_full_reference':
+                return failed
+            return original_run(command, **kwargs)
+        with patch.object(recovery.subprocess, 'run', side_effect=fail_generator), \
+                contextlib.redirect_stderr(io.StringIO()) as error_log, self.assertRaises(subprocess.CalledProcessError):
+            recovery.reference(self.root, 'strong_scaling')
+        self.assertIn('disk full', error_log.getvalue())
+        self.assertFalse(receipt.exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.reference(self.root, 'strong_scaling')
+        record = ten.read(receipt)
+        path = self.root / 'references' / (record['key'] + '.sfull')
+        path.write_bytes(b'broken')
+        with self.assertRaisesRegex(ValueError, 'missing/truncated'):
+            recovery.submit(self.root)
+        self.assertFalse(any(c[0] == 'sbatch' for c in self.calls))
+
+    def test_two_reference_jobs_have_separate_budgets_and_no_duplicate_submission(self):
+        for action in recovery.ACTIONS:
+            (self.root / 'reference-ready' / (action + '.json')).unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.submit_references(self.root)
+            recovery.submit_references(self.root)
+        commands = [c for c in self.calls if c[:2] == ['sbatch', '--parsable']]
+        self.assertEqual(len(commands), 2)
+        manifest, _ = recovery.verify(self.root)
+        self.assertEqual(len(manifest['reference_jobs']), 2)
+        for ref in manifest['reference_jobs']:
+            script = (self.root / ref['script']).read_text()
+            self.assertIn('--time=24:00:00', script)
+            self.assertIn('--ntasks=1', script)
+            self.assertNotIn('mpirun', script)
 
     def test_scope_config_and_unchanged_source(self):
         manifest, source = recovery.verify(self.root)
@@ -99,6 +158,7 @@ class RecoveryTest(unittest.TestCase):
                              (10, 63, 2, 64))
             self.assertIs(cfg['validate'], True)
             self.assertIsNone(cfg['partial_cache'])
+            self.assertEqual(cfg['full_cache'], str(self.root / 'references'))
             self.assertEqual(cfg['permutation_matrices'], ['HV15R'])
             script = (self.root / job['script']).read_text()
             for flag in ('--time=24:00:00', '--mem=450000M', '--exclusive', '--cpus-per-task=64'):
@@ -113,6 +173,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(len(commands), 4)  # Three cage8 pilot products + one HV15R square.
         self.assertTrue(all('--partial' not in c and '--no-validate' not in c for c in commands))
         self.assertEqual(commands[-1][commands[-1].index('--repeats') + 1], '10')
+        self.assertTrue(all('--full-cache' not in c for c in commands[:3]))
+        self.assertIn('--full-cache', commands[-1])
         self.assertFalse((self.campaign / 'n4/strong_scaling/trident_two_sided.tsv').exists())
         self.assertEqual((self.campaign / 'manifest.json').read_bytes(), self.original_manifest)
         _, e, cfg = recovery.runtime(self.root, self.campaign, 4, 'trident_two_sided')

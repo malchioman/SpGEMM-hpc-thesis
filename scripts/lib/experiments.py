@@ -103,7 +103,7 @@ def options(argv=None):
     for key in ("ranks-per-node", "threads", "cpus-per-rank", "runs", "warmup", "repeats",
                 "trials", "chunk", "seed", "timeout"):
         parser.add_argument("--" + key, type=int)
-    for key in ("build-dir", "matrix-dir", "results-dir", "mpi-launcher", "hostfile", "schedule", "partial-cache"):
+    for key in ("build-dir", "matrix-dir", "results-dir", "mpi-launcher", "hostfile", "schedule", "partial-cache", "full-cache"):
         parser.add_argument("--" + key)
     parser.add_argument("--mpi-arg", action="append", help="extra Open MPI token; use --mpi-arg=VALUE")
     group = parser.add_mutually_exclusive_group()
@@ -176,6 +176,12 @@ def options(argv=None):
         if not isinstance(cfg.partial_cache, str) or not cfg.partial_cache:
             raise ValueError("partial_cache must be a directory or null")
         cfg.partial_cache = repo_path(cfg.partial_cache)
+    if cfg.full_cache is not None:
+        if not isinstance(cfg.full_cache, str) or not cfg.full_cache:
+            raise ValueError("full_cache must be a directory or null")
+        cfg.full_cache = repo_path(cfg.full_cache)
+        if cfg.validate is not True:
+            raise ValueError("full_cache requires numeric Full validation")
     if cfg.local_check:
         cfg.validate = True
         if cfg.hostfile:
@@ -343,6 +349,8 @@ def command(cfg, action, case, variant, nodes, raw_path):
             cmd += ["--partial-cache", str(cfg.partial_cache)]
     elif not validate:
         cmd += ["--no-validate"]
+    elif cfg.full_cache and action != "pilot":
+        cmd += ["--full-cache", str(cfg.full_cache)]
     return cmd
 
 

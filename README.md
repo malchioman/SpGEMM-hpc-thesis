@@ -585,6 +585,7 @@ measurements are needed to assess communication costs and scaling.
 | [Trident PUT](docs/trident_put.md) | Push protocol and stage synchronization |
 | [Experiment plan](docs/experiments.md) | Proposed comparisons, matrix inputs and measurement methodology |
 | [Partial validation cache](docs/partial-validation-cache.md) | Numeric reference reuse, format, diagnostics and CRESCO preparation |
+| [Full validation cache](docs/full-validation-cache.md) | Reuse exact numeric references and roundoff bounds across recovery launches |
 | [Script guide](scripts/README.md) | Build, preparation, experiments and analysis options |
 | [SbatchMan guide](scripts/sbatchman/README.md) | Slurm and OpenPBS/PBS Pro setup and job submission |
 | [Scientific and technical sources](docs/sources.md) | MPI/OpenMP standards, Matrix Market and SpGEMM literature |

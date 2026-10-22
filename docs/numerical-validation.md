@@ -4,6 +4,8 @@ Il percorso Full usa `streaming_roundoff_v2`, criterio
 `componentwise_dot_bound_v1`. Confronta tutte le coordinate del prodotto,
 una riga alla volta, con un riferimento `long double` e un limite deterministico
 per gli arrotondamenti. Non modifica i kernel, i protocolli MPI o i timer.
+Con `--full-cache` il riferimento e i limiti sono riutilizzati senza ricalcolo,
+con lo stesso criterio: vedere [full-validation-cache.md](full-validation-cache.md).
 Partial, la sua cache dei conteggi e `--no-validate` conservano il comportamento.
 
 L'implementazione è nel blocco `full-streaming-validation-v2` di
@@ -139,21 +141,21 @@ locale WSL può richiedere `OMPI_MCA_osc=ucx`,
 `OMPI_MCA_opal_common_ucx_tls=tcp,self`, `UCX_TLS=tcp,self`; questi override non
 vengono inseriti nei job CRESCO.
 
-Esito della verifica locale del 22 ottobre 2026: **216/216 test CTest passati**
-in una suite completa con GCC 13.3/Open MPI 4.1.6 in WSL, dopo aver archiviato i
-TSV di precedenti test con intestazione incompatibile. Gli **8 test offline di
+Esito della verifica locale del 22 ottobre 2026: **217/217 test CTest passati**
+in una suite completa con GCC 13.3/Open MPI 4.1.6 in WSL, inclusi i confronti
+con e senza cache numerica completa. I **10 test offline di
 recupero** passano su una copia temporanea dei sorgenti in WSL; comprendono
 anche il rifiuto di righe legacy presentate come nuovi risultati e l'accettazione
 di un errore assoluto superiore a `1e-10` soltanto con i metadati appropriati.
 È inoltre verificato il rifiuto di un rapporto appena superiore a 1 anche quando
 una conversione a binary64 lo arrotonderebbe a 1.
 
-Il log CTest completo è conservato localmente in `test-results/roundoff-ctest.log`.
+Il log CTest completo è conservato localmente in `test-results/full-cache-ctest.log`.
 Le misurazioni di durata dei test locali non sono stime dei tempi di CRESCO.
 
 La memoria del riferimento è proporzionale alla riga più grande; A, B e il
-risultato raccolto rimangono residenti. Il costo del ricalcolo completo del
-riferimento rimane e cresce rispetto al solo conteggio: non c'è garanzia di
+risultato raccolto rimangono residenti. Senza `--full-cache` rimane il costo del ricalcolo completo; con la cache
+restano lettura e confronto, mentre il calcolo è spostato nelle preparazioni: non c'è garanzia di
 completare un prodotto HV15R entro 24 ore. Prima del recupero generale servono
 le prove complete preliminari sul cluster, separatamente per originale e
 permutata, come nel [runbook di recupero](cresco-hv15r-numeric-recovery.md).

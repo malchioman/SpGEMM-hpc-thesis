@@ -54,6 +54,9 @@ void printUsage(const std::string& programName, const std::string& defaultResult
         << "                       Without --matrix-b, requires square A and computes A*A\n"
         << "  --matrix-b PATH      Matrix Market coordinate input for B\n"
         << "  --partial            Compare only row nnz counts with a streamed serial reference\n"
+        // BEGIN full-reference-cache-v1
+        << "  --full-cache DIR  Require a prepared numeric Full reference\n"
+        // END full-reference-cache-v1
         << "  --partial-cache DIR  Require a prepared partial reference (only with --partial)\n"
         << "  --no-validate        Skip serial reference and result comparison (default: full)\n"
         << "  --results PATH       TSV output path (default: " << defaultResultsPath << ")\n"
@@ -220,8 +223,15 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
 
         if (argument == "--schedule" || argument == "--matrix" || argument == "--matrix-a" ||
             argument == "--matrix-b" || argument == "--results" || argument == "--experiment" ||
-            argument == "--partial-cache") {
+            (argument == "--partial-cache" || argument == "--full-cache")) {
             const std::string value = argv[++index];
+            // BEGIN full-reference-cache-v1
+            if (argument == "--full-cache") {
+                if (value.empty()) throw std::invalid_argument("--full-cache requires a directory");
+                options.fullCacheDirectory = value;
+                continue;
+            }
+            // END full-reference-cache-v1
             if (argument == "--partial-cache") {
                 if (value.empty()) throw std::invalid_argument("--partial-cache requires a directory");
                 options.partialCacheDirectory = value;
@@ -291,6 +301,10 @@ Options parseOptions(int argc, char** argv, const std::string& programName,
     if (options.bNonZerosPerRow > options.bCols) {
         throw std::invalid_argument("--b-nnz-per-row cannot exceed --b-cols");
     }
+    // BEGIN full-reference-cache-v1
+    if (!options.fullCacheDirectory.empty() && options.validationMode != ValidationMode::Full)
+        throw std::invalid_argument("--full-cache requires Full validation (no --partial/--no-validate)");
+    // END full-reference-cache-v1
     if (!options.partialCacheDirectory.empty() && options.validationMode != ValidationMode::Partial)
         throw std::invalid_argument("--partial-cache requires --partial");
     return options;
@@ -560,6 +574,7 @@ ValidationResult comparePartialReference(const PartialReference& reference, cons
 // BEGIN full-streaming-validation-v2
 #include <cfenv>
 #include <sstream>
+#include "full_reference.hpp"
 
 BenchmarkMetrics validationMetadata(const ValidationResult& validation) {
     std::ostringstream ratio;
@@ -658,22 +673,11 @@ long double coordinateBound(const NumericCell& cell) {
     return addUp(multiplyUp(addUp(candidate.gamma, reference.gamma), scale),
                  addUp(candidate.underflow, reference.underflow));
 }
-}  // namespace
-
-static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
-                                               const CsrMatrix& result) {
-    ValidationResult validation;
-    validation.maxAbsoluteError = std::numeric_limits<double>::infinity();
-    validation.passed = false;
-    validation.referenceDigits = std::numeric_limits<long double>::digits;
-    std::cout << "validation_full_strategy=streaming_roundoff_v2"
-              << " validation_criterion=componentwise_dot_bound_v1"
-              << " validation_reference_digits=" << std::numeric_limits<long double>::digits
-              << " validation_candidate_digits=" << std::numeric_limits<double>::digits << '\n';
+bool fullNumericEnvironment() {
     // The bound assumes binary round-to-nearest with gradual underflow, without reassociation.
 #if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
     std::cout << "validation_invalid_environment=fast_math\n";
-    return validation;
+    return false;
 #endif
     if (std::numeric_limits<double>::radix != 2 || std::numeric_limits<long double>::radix != 2 ||
         std::numeric_limits<double>::digits != 53 ||
@@ -683,8 +687,47 @@ static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const Cs
         std::fegetround() != FE_TONEAREST || !gradualUnderflow<double>() ||
         !gradualUnderflow<long double>()) {
         std::cout << "validation_invalid_environment=unsupported_floating_point\n";
-        return validation;
+        return false;
     }
+    return true;
+}
+
+void buildFullRow(const CsrMatrix& matrixA, const CsrMatrix& matrixB, int row,
+                  std::unordered_map<int, NumericCell>& accumulator, FullReferenceRow& cells) {
+    accumulator.clear();
+    for (CsrOffset a = matrixA.rowPtr[row]; a < matrixA.rowPtr[row + 1]; ++a) {
+        const int bRow = matrixA.columnIndices[a];
+        for (CsrOffset b = matrixB.rowPtr[bRow]; b < matrixB.rowPtr[bRow + 1]; ++b) {
+            auto& cell = accumulator[matrixB.columnIndices[b]];
+            const double product = matrixA.values[a] * matrixB.values[b];
+            const long double precise = static_cast<long double>(matrixA.values[a]) *
+                                        static_cast<long double>(matrixB.values[b]);
+            cell.serial += product;
+            cell.reference += precise;
+            cell.magnitude += std::abs(precise);
+            cell.terms = checkedCsrAdd(cell.terms, 1, "validation contributions");
+        }
+    }
+    cells.clear();
+    for (const auto& entry : accumulator) {
+        const auto& cell = entry.second;
+        cells.push_back({entry.first, cell.serial, cell.reference, coordinateBound(cell), cell.terms});
+    }
+    std::sort(cells.begin(), cells.end(), [](const auto& a, const auto& b) { return a.column < b.column; });
+}
+}  // namespace
+
+static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                                               const CsrMatrix& result, const std::string& fullCacheDirectory) {
+    ValidationResult validation;
+    validation.maxAbsoluteError = std::numeric_limits<double>::infinity();
+    validation.passed = false;
+    validation.referenceDigits = std::numeric_limits<long double>::digits;
+    std::cout << "validation_full_strategy=streaming_roundoff_v2"
+              << " validation_criterion=componentwise_dot_bound_v1"
+              << " validation_reference_digits=" << std::numeric_limits<long double>::digits
+              << " validation_candidate_digits=" << std::numeric_limits<double>::digits << '\n';
+    if (!fullNumericEnvironment()) return validation;
     if (!validNumericCsr(matrixA, false) || !validNumericCsr(matrixB, false) ||
         !validNumericCsr(result, true) || matrixA.cols != matrixB.rows ||
         result.rows != matrixA.rows || result.cols != matrixB.cols) {
@@ -698,47 +741,43 @@ static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const Cs
     int worstRow = -1, worstColumn = -1, examples = 0;
     CsrOffset supportMismatches = 0, referenceNnz = 0, rejected = 0;
     std::unordered_map<int, NumericCell> accumulator;
-    std::vector<int> columns;
+    FullReferenceRow cells;
+    ValidationDiagnostics diagnostics;
+    std::unique_ptr<FullReferenceReader> reader;
+    if (!fullCacheDirectory.empty()) {
+        const auto identityStart = std::chrono::steady_clock::now();
+        diagnostics.key = fullReferenceKey(matrixA, matrixB);
+        diagnostics.identitySeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - identityStart).count();
+        reader = std::make_unique<FullReferenceReader>(fullCacheDirectory, diagnostics.key, matrixA.rows, matrixB.cols);
+        diagnostics.source = "reused";
+    } else diagnostics.source = "regenerated";
     for (int row = 0; row < matrixA.rows; ++row) {
-        accumulator.clear();
-        for (CsrOffset a = matrixA.rowPtr[row]; a < matrixA.rowPtr[row + 1]; ++a) {
-            const int bRow = matrixA.columnIndices[a];
-            for (CsrOffset b = matrixB.rowPtr[bRow]; b < matrixB.rowPtr[bRow + 1]; ++b) {
-                auto& cell = accumulator[matrixB.columnIndices[b]];
-                const double product = matrixA.values[a] * matrixB.values[b];
-                const long double precise = static_cast<long double>(matrixA.values[a]) *
-                                            static_cast<long double>(matrixB.values[b]);
-                cell.serial += product;
-                cell.reference += precise;
-                cell.magnitude += std::abs(precise);
-                cell.terms = checkedCsrAdd(cell.terms, 1, "validation contributions");
-            }
-        }
-        columns.clear();
+        const auto rowStart = std::chrono::steady_clock::now();
+        if (reader) reader->readRow(cells);
+        else buildFullRow(matrixA, matrixB, row, accumulator, cells);
+        const auto rowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - rowStart).count();
+        if (reader) diagnostics.readSeconds += rowSeconds;
+        else diagnostics.buildSeconds += rowSeconds;
         CsrOffset rowNnz = 0;
-        for (const auto& entry : accumulator) {
-            columns.push_back(entry.first); // Keep cancelled coordinates for the numerical comparison.
-            if (entry.second.serial != 0) ++rowNnz;
-        }
-        std::sort(columns.begin(), columns.end());
+        for (const auto& cell : cells) if (cell.serial != 0) ++rowNnz;
         referenceNnz = checkedCsrAdd(referenceNnz, rowNnz, "validation reference nnz");
         CsrOffset actual = result.rowPtr[row];
         const auto actualEnd = result.rowPtr[row + 1];
         if (actualEnd - actual != rowNnz) ++validation.rowNnzMismatches;
         std::size_t expected = 0;
-        while (actual < actualEnd || expected < columns.size()) {
-            NumericCell cell;
+        while (actual < actualEnd || expected < cells.size()) {
+            FullReferenceCell cell;
             double actualValue = 0;
             bool actualStored = false;
             int column;
-            if (expected == columns.size() ||
-                (actual < actualEnd && result.columnIndices[actual] < columns[expected])) {
+            if (expected == cells.size() ||
+                (actual < actualEnd && result.columnIndices[actual] < cells[expected].column)) {
                 column = result.columnIndices[actual];
                 actualValue = result.values[actual++];
                 actualStored = true;
             } else {
-                column = columns[expected++];
-                cell = accumulator.at(column);
+                cell = cells[expected++];
+                column = cell.column;
                 if (actual < actualEnd && result.columnIndices[actual] == column) {
                     actualValue = result.values[actual++];
                     actualStored = true;
@@ -750,7 +789,7 @@ static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const Cs
             maximumSerialError = std::max(maximumSerialError, serialError);
             const long double difference = std::abs(static_cast<long double>(actualValue) - cell.reference);
             const long double errorUpper = difference == 0 ? 0 : upward(difference);
-            const long double bound = coordinateBound(cell);
+            const long double bound = cell.bound;
             // An infinite/unavailable bound is never permission to accept a coordinate.
             const bool accepted = std::isfinite(serialError) && std::isfinite(errorUpper) &&
                                   std::isfinite(bound) && errorUpper <= bound;
@@ -783,6 +822,11 @@ static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const Cs
             }
         }
     }
+    // A corrupt/truncated cache cannot yield a scientific PASS or a TSV row.
+    if (reader) reader->finish();
+    diagnostics.compareSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()
+        - diagnostics.identitySeconds - diagnostics.readSeconds - diagnostics.buildSeconds;
+    printValidationDiagnostics(diagnostics);
     validation.maxAbsoluteError = maximumSerialError;
     validation.passed = rejected == 0;
     validation.maxErrorRatio = maximumRatio;
@@ -805,16 +849,27 @@ static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const Cs
               << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() << '\n';
     return validation;
 }
+void prepareFullReference(const CsrMatrix& a, const CsrMatrix& b,
+                          const std::filesystem::path& directory, ValidationDiagnostics& diagnostics) {
+    if (!fullNumericEnvironment() || !validNumericCsr(a, false) || !validNumericCsr(b, false) || a.cols != b.rows)
+        throw std::runtime_error("invalid Full reference inputs/numerical environment");
+    const auto start = std::chrono::steady_clock::now();
+    diagnostics.key = fullReferenceKey(a, b);
+    diagnostics.identitySeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    std::unordered_map<int, NumericCell> accumulator;
+    prepareFullReferenceFile(directory, diagnostics.key, a.rows, b.cols,
+        [&](int row, FullReferenceRow& cells) { buildFullRow(a, b, row, accumulator, cells); }, diagnostics);
+}
 // END full-streaming-validation-v2
 
 ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                                  const CsrMatrix& result, ValidationMode mode,
-                                 const std::string& partialCacheDirectory) {
+                                 const std::string& partialCacheDirectory, const std::string& fullCacheDirectory) {
     ValidationResult validation;
     validation.mode = mode;
     if (mode == ValidationMode::None) return validation;
     if (mode == ValidationMode::Full) {
-        return validateFullStreaming(matrixA, matrixB, result);
+        return validateFullStreaming(matrixA, matrixB, result, fullCacheDirectory);
     }
     validateMultiplicationDimensions(matrixA, matrixB);
     if (result.rows != matrixA.rows || result.cols != matrixB.cols) {

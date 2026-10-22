@@ -1,9 +1,10 @@
 # Recupero numerico mirato di HV15R
 
 > **Aggiornamento del 22 ottobre 2026:** il branch `optimizations` implementa ora
-> il [criterio numerico con limite di arrotondamento](numerical-validation.md).
+> il [criterio numerico con limite di arrotondamento](numerical-validation.md)
+> con [cache del riferimento completo](full-validation-cache.md).
 > I casi isolati reali sono verificati localmente; i prodotti completi sul cluster
-> restano da verificare. Il recupero usa un nuovo manifest `hv15r-roundoff-v3`
+> restano da verificare. Il recupero usa un nuovo manifest `hv15r-roundoff-cached-v4`
 > e una nuova directory, senza modificare la campagna congelata.
 
 ## Problema osservato e limiti della diagnosi
@@ -43,9 +44,11 @@ e ambienti numerici incompatibili sono rifiutati.
 
 La memoria aggiuntiva del riferimento dipende dalla riga più grande del prodotto,
 non dall'intero C. Il risultato C raccolto, A e B rimangono comunque in memoria.
-Il costo del calcolo sequenziale completo rimane: questo recupero sarà più lento
-di una lettura della cache dei soli conteggi. Una singola prova per job dà margine,
-ma non garantisce a priori il completamento di HV15R entro 24 ore.
+Il calcolo sequenziale completo e i limiti di errore vengono preparati una volta
+per coppia di matrici. Ogni recupero legge il riferimento e confronta il proprio
+risultato. La cache richiede spazio consistente (circa 78 GB per riferimento
+HV15R su x86, stima); una singola prova per job non garantisce a priori
+il completamento entro 24 ore.
 
 Kernel, partizionamento, protocolli MPI, pipeline, accumulatori, definizioni dei
 timer, campioni e identificatori `benchmark_protocol` non cambiano. I TSV
@@ -61,7 +64,7 @@ Non si promuovono i vecchi tempi contenuti nei raw TSV falliti.
 Partial e la cache restano invariati nel comportamento. La modifica dei sorgenti
 invalida conservativamente l'identità di build delle nuove cache: **non ricostruire
 la campagna congelata e non sostituire i suoi riferimenti**. Il recupero usa Full
-senza cache, in una directory separata.
+con una nuova cache numerica, in una directory separata.
 
 ## Selezione e protezioni del recupero
 
@@ -90,9 +93,9 @@ I pilot cage8 della variante sono verificati separatamente prima del caso princi
 
 La preparazione congela sorgenti, binari, configurazioni e script. Verifica che
 il codice di produzione differisca dall'originale soltanto nel validatore Full e
-nella serializzazione dei suoi metadati,
-che la modifica CMake riguardi solo i tre nuovi test, e che compilatore, versione
-e principali flag coincidano con la build originale. Conserva hash dei TSV
+nella serializzazione dei suoi metadati e nel collegamento della cache Full.
+Il controllo CMake consente i relativi sorgenti, generatore e test; compilatore, versione
+e principali flag devono coincidere con la build originale. Conserva hash dei TSV
 originali: modifiche successive ai risultati originali bloccano il recupero.
 Invii ripetuti non duplicano i job; una ricevuta ambigua richiede prima di leggere
 l'accounting. Un job riuscito non rimisura la prova se rieseguito.
@@ -126,19 +129,39 @@ cd "$REPO"
 python3 scripts/recover_cresco_hv15r.py prepare \
   --repo "$REPO" \
   --source "$REPO/results/tesi-006/partial10-cached" \
-  --root "$REPO/results/tesi-006/hv15r-roundoff-v3"
+  --root "$REPO/results/tesi-006/hv15r-roundoff-cached-v4" \
+  --reference-cache-dir /lpor1/scratch_1/usr/malchiod/tirocinio-spgemm/full-validation-references/hv15r-roundoff-cached-v4
 SBATCH
 ```
 
 Se la preparazione fallisce, conservare il log e la directory incompleta per
 diagnosi; non sovrascriverla o cancellare i risultati della campagna originale.
 
-## Prove preliminari, poi eventuale recupero restante
+## Preparazione dei due riferimenti condivisi
 
-Dopo `Prepared ... Nothing submitted.` nel log della preparazione:
+Dopo `Prepared ... Nothing submitted.`, verificare spazio disponibile e quota su
+scratch: prevedere circa 156 GB complessivi per i due riferimenti, più margine.
+La stima dipende dal supporto strutturale effettivo, incluse le cancellazioni.
 
 ```bash
-RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-v3
+df -h /lpor1/scratch_1/usr/malchiod/tirocinio-spgemm
+RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-cached-v4
+python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" submit-references --root "$RECOVERY"
+python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" status --root "$RECOVERY"
+```
+
+Sono al massimo due job indipendenti da un nodo, un processo, 450000M e 24 ore:
+uno per originale, uno per permutata. Non ricostruiscono i 24 riferimenti parziali.
+Aspettare `REFERENCE strong_scaling: READY` e `REFERENCE permutation: READY`
+(per le azioni presenti). Un errore blocca i recuperi, senza avviare implicitamente
+il calcolo sequenziale in ogni benchmark. I log sono `logs/reference-*.log`.
+
+## Prove preliminari, poi eventuale recupero restante
+
+Dopo che i riferimenti richiesti sono pronti:
+
+```bash
+RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-cached-v4
 python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" submit-probe --root "$RECOVERY"
 ```
 
@@ -152,7 +175,7 @@ Hanno gli stessi 10 campioni del recupero e, quando superano il controllo
 completo, quei campioni vengono conservati: non vengono ripetute.
 
 ```bash
-RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-v3
+RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-cached-v4
 python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" status --root "$RECOVERY"
 ```
 
@@ -163,14 +186,14 @@ un TSV PASS coerente e una ricevuta di completamento. Se una fallisce, leggere
 ed esempi delle coordinate, senza allargare automaticamente la tolleranza.
 
 ```bash
-RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-v3
+RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-cached-v4
 python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" submit-remaining --root "$RECOVERY"
 ```
 
 ## Dati per l'analisi
 
-I nuovi TSV sono in `hv15r-roundoff-v3/nN/strong_scaling/trident_*.tsv` e
-`hv15r-roundoff-v3/nN/permutation/trident_*.tsv`. Gli originali
+I nuovi TSV sono in `hv15r-roundoff-cached-v4/nN/strong_scaling/trident_*.tsv` e
+`hv15r-roundoff-cached-v4/nN/permutation/trident_*.tsv`. Gli originali
 rimangono in `partial10-cached/nN/...`; lo script non aggiunge righe ai vecchi TSV.
 Il vecchio monitor richiede `PARTIAL_PASS` e rifiuterebbe righe Full mescolate
 senza aggiornare la sua logica. All'esportazione finale si uniranno le tabelle
@@ -189,7 +212,7 @@ Le verifiche del nuovo criterio sono descritte in
 per coordinata. I test MPI includono tutti i cinque trasporti Trident e i casi
 reali isolati, anche quello che superava la vecchia soglia `1e-10`.
 
-Esito locale della versione aggiornata: **216/216 test CTest e 8/8 test offline
+Esito locale della versione aggiornata: **217/217 test CTest e 10/10 test offline
 del recupero passati**. Questi esiti non attestano l'installazione sul cluster
 né la validazione numerica dell'intero prodotto HV15R su CRESCO.
 

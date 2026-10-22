@@ -45,6 +45,15 @@ int main() {
         }
         expectRejected("--partial", "--no-validate");
         expectRejected("--no-validate", "--partial");
+        expectRejected("--full-cache", "");
+        if (parseArguments({"--full-cache", "cache"}).fullCacheDirectory != "cache")
+            throw std::runtime_error("full cache option lost");
+        for (const auto& mode : {"--partial", "--no-validate"}) {
+            bool rejected = false;
+            try { parseArguments({"--full-cache", "cache", mode}); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            if (!rejected) throw std::runtime_error("Full cache accepted outside Full validation");
+        }
         expectRejected("--partial-cache", "cache");
         expectRejected("--partial-cache", "");
         if (parseArguments({"--partial", "--partial-cache", "cache"}).partialCacheDirectory != "cache" ||
