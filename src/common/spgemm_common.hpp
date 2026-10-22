@@ -21,6 +21,12 @@ struct ValidationResult {
     std::optional<double> maxAbsoluteError;
     int rowNnzMismatches = 0;
 
+    // BEGIN roundoff-validation-metadata-v1
+    long double maxErrorRatio = 0;
+    std::int64_t rejectedCoordinates = 1;
+    int referenceDigits = 0;
+    // END roundoff-validation-metadata-v1
+
     const char* status() const;
 };
 
@@ -86,6 +92,9 @@ double percentile90(std::vector<double> samples);
 std::string timingSamplesJson(const std::vector<double>& samples);
 
 using BenchmarkMetrics = std::vector<std::pair<std::string, std::string>>;
+// BEGIN roundoff-validation-metadata-v1
+BenchmarkMetrics validationMetadata(const ValidationResult& validation);
+// END roundoff-validation-metadata-v1
 // Structural scalar products assigned to the baseline's contiguous row partitions.
 std::vector<std::int64_t> rowPartitionWork(const CsrMatrix& a, const CsrMatrix& b, int ranks);
 // Collective, outside measured regions. Global matrices and work are used only on rank 0.

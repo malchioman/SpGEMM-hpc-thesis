@@ -557,6 +557,256 @@ ValidationResult comparePartialReference(const PartialReference& reference, cons
     return validation;
 }
 
+// BEGIN full-streaming-validation-v2
+#include <cfenv>
+#include <sstream>
+
+BenchmarkMetrics validationMetadata(const ValidationResult& validation) {
+    std::ostringstream ratio;
+    ratio << std::setprecision(std::numeric_limits<long double>::max_digits10) << validation.maxErrorRatio;
+    const bool full = validation.mode == ValidationMode::Full;
+    return {{"validation_criterion", full ? "componentwise_dot_bound_v1" :
+                                       validation.mode == ValidationMode::Partial ? "row_nnz_exact_v1" : "none"},
+            {"validation_max_error_ratio", full ? ratio.str() : "NA"},
+            {"validation_rejected_coordinates", full ? std::to_string(validation.rejectedCoordinates) : "NA"},
+            {"validation_reference_digits", full ? std::to_string(validation.referenceDigits) : "NA"}};
+}
+
+namespace {
+// The bound covers at most m products and m additions per output coordinate.
+// For precision u and gradual-underflow unit eta:
+//   |fl(dot)-dot| <= gamma_(2m)*sum|a*b| + 2m*eta/(1-2m*u).
+// eta (rather than eta/2) is a conservative allowance for each operation.
+// See docs/numerical-validation.md for the model, limitations and derivation.
+long double upward(long double value) {
+    return std::nextafter(value, std::numeric_limits<long double>::infinity());
+}
+long double addUp(long double a, long double b) {
+    if (a == 0) return b;
+    if (b == 0) return a;
+    return upward(a + b);
+}
+long double multiplyUp(long double a, long double b) {
+    return a == 0 || b == 0 ? 0 : upward(a * b);
+}
+long double divideUp(long double a, long double b) {
+    return a == 0 ? 0 : upward(a / b);
+}
+
+template <typename T>
+bool gradualUnderflow() {
+    volatile T normal = std::numeric_limits<T>::min();
+    volatile T half = T(0.5);
+    volatile T subnormal = std::numeric_limits<T>::denorm_min();
+    volatile T large = std::numeric_limits<T>::max();
+    return normal * half == std::numeric_limits<T>::min() / T(2) &&
+           subnormal * large == std::numeric_limits<T>::denorm_min() * std::numeric_limits<T>::max();
+}
+
+bool validNumericCsr(const CsrMatrix& matrix, bool ordered) {
+    if (matrix.rows < 0 || matrix.cols < 0 ||
+        matrix.rowPtr.size() != static_cast<std::size_t>(matrix.rows) + 1 ||
+        matrix.rowPtr.front() != 0 || matrix.rowPtr.back() != checkedCsrCount(matrix.values.size()) ||
+        matrix.columnIndices.size() != matrix.values.size()) return false;
+    for (int row = 0; row < matrix.rows; ++row) {
+        const auto first = matrix.rowPtr[row], end = matrix.rowPtr[row + 1];
+        if (first < 0 || end < first || end > checkedCsrCount(matrix.values.size())) return false;
+        int previous = -1;
+        for (CsrOffset p = first; p < end; ++p) {
+            const int column = matrix.columnIndices[p];
+            if (column < 0 || column >= matrix.cols || (ordered && column <= previous) ||
+                !std::isfinite(matrix.values[p])) return false;
+            previous = column;
+        }
+    }
+    return true;
+}
+
+struct NumericCell {
+    double serial = 0;             // Historical TSV diagnostic; not the acceptance oracle.
+    long double reference = 0;     // Same operands, evaluated in long double.
+    long double magnitude = 0;     // Rounded sum of absolute long-double products.
+    CsrOffset terms = 0;
+};
+
+struct ErrorModel {
+    long double gamma;
+    long double underflow;
+};
+
+template <typename T>
+ErrorModel errorModel(CsrOffset terms) {
+    const long double operations = multiplyUp(2, static_cast<long double>(terms));
+    const long double scaled = multiplyUp(operations, std::numeric_limits<T>::epsilon() / 2.0L);
+    // Fail closed when inversion of the magnitude estimate cannot be justified.
+    if (!(scaled < 0.5L)) return {1, std::numeric_limits<long double>::infinity()};
+    const long double denominator = std::nextafter(1 - scaled, 0.0L);
+    return {divideUp(scaled, denominator),
+            divideUp(multiplyUp(operations, std::numeric_limits<T>::denorm_min()), denominator)};
+}
+
+long double coordinateBound(const NumericCell& cell) {
+    if (cell.terms == 0) return 0;
+    const auto candidate = errorModel<double>(cell.terms);
+    const auto reference = errorModel<long double>(cell.terms);
+    if (!(candidate.gamma < 1 && reference.gamma < 1) ||
+        !std::isfinite(cell.reference) || !std::isfinite(cell.magnitude))
+        return std::numeric_limits<long double>::infinity();
+    // |magnitude - S| <= gamma_L*S + underflow_L, hence this upper bound on S.
+    const long double scale = divideUp(addUp(cell.magnitude, reference.underflow),
+                                       std::nextafter(1 - reference.gamma, 0.0L));
+    return addUp(multiplyUp(addUp(candidate.gamma, reference.gamma), scale),
+                 addUp(candidate.underflow, reference.underflow));
+}
+}  // namespace
+
+static ValidationResult validateFullStreaming(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
+                                               const CsrMatrix& result) {
+    ValidationResult validation;
+    validation.maxAbsoluteError = std::numeric_limits<double>::infinity();
+    validation.passed = false;
+    validation.referenceDigits = std::numeric_limits<long double>::digits;
+    std::cout << "validation_full_strategy=streaming_roundoff_v2"
+              << " validation_criterion=componentwise_dot_bound_v1"
+              << " validation_reference_digits=" << std::numeric_limits<long double>::digits
+              << " validation_candidate_digits=" << std::numeric_limits<double>::digits << '\n';
+    // The bound assumes binary round-to-nearest with gradual underflow, without reassociation.
+#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
+    std::cout << "validation_invalid_environment=fast_math\n";
+    return validation;
+#endif
+    if (std::numeric_limits<double>::radix != 2 || std::numeric_limits<long double>::radix != 2 ||
+        std::numeric_limits<double>::digits != 53 ||
+        std::numeric_limits<long double>::digits < std::numeric_limits<double>::digits ||
+        std::numeric_limits<double>::has_denorm != std::denorm_present ||
+        std::numeric_limits<long double>::has_denorm != std::denorm_present ||
+        std::fegetround() != FE_TONEAREST || !gradualUnderflow<double>() ||
+        !gradualUnderflow<long double>()) {
+        std::cout << "validation_invalid_environment=unsupported_floating_point\n";
+        return validation;
+    }
+    if (!validNumericCsr(matrixA, false) || !validNumericCsr(matrixB, false) ||
+        !validNumericCsr(result, true) || matrixA.cols != matrixB.rows ||
+        result.rows != matrixA.rows || result.cols != matrixB.cols) {
+        std::cout << "validation_invalid_matrix=1\n";
+        return validation;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    double maximumSerialError = 0;
+    long double maximumReferenceError = 0, maximumRatio = 0;
+    long double worstActual = 0, worstReference = 0, worstBound = 0;
+    int worstRow = -1, worstColumn = -1, examples = 0;
+    CsrOffset supportMismatches = 0, referenceNnz = 0, rejected = 0;
+    std::unordered_map<int, NumericCell> accumulator;
+    std::vector<int> columns;
+    for (int row = 0; row < matrixA.rows; ++row) {
+        accumulator.clear();
+        for (CsrOffset a = matrixA.rowPtr[row]; a < matrixA.rowPtr[row + 1]; ++a) {
+            const int bRow = matrixA.columnIndices[a];
+            for (CsrOffset b = matrixB.rowPtr[bRow]; b < matrixB.rowPtr[bRow + 1]; ++b) {
+                auto& cell = accumulator[matrixB.columnIndices[b]];
+                const double product = matrixA.values[a] * matrixB.values[b];
+                const long double precise = static_cast<long double>(matrixA.values[a]) *
+                                            static_cast<long double>(matrixB.values[b]);
+                cell.serial += product;
+                cell.reference += precise;
+                cell.magnitude += std::abs(precise);
+                cell.terms = checkedCsrAdd(cell.terms, 1, "validation contributions");
+            }
+        }
+        columns.clear();
+        CsrOffset rowNnz = 0;
+        for (const auto& entry : accumulator) {
+            columns.push_back(entry.first); // Keep cancelled coordinates for the numerical comparison.
+            if (entry.second.serial != 0) ++rowNnz;
+        }
+        std::sort(columns.begin(), columns.end());
+        referenceNnz = checkedCsrAdd(referenceNnz, rowNnz, "validation reference nnz");
+        CsrOffset actual = result.rowPtr[row];
+        const auto actualEnd = result.rowPtr[row + 1];
+        if (actualEnd - actual != rowNnz) ++validation.rowNnzMismatches;
+        std::size_t expected = 0;
+        while (actual < actualEnd || expected < columns.size()) {
+            NumericCell cell;
+            double actualValue = 0;
+            bool actualStored = false;
+            int column;
+            if (expected == columns.size() ||
+                (actual < actualEnd && result.columnIndices[actual] < columns[expected])) {
+                column = result.columnIndices[actual];
+                actualValue = result.values[actual++];
+                actualStored = true;
+            } else {
+                column = columns[expected++];
+                cell = accumulator.at(column);
+                if (actual < actualEnd && result.columnIndices[actual] == column) {
+                    actualValue = result.values[actual++];
+                    actualStored = true;
+                }
+            }
+            const bool supportMismatch = actualStored != (cell.serial != 0);
+            double serialError = std::abs(actualValue - cell.serial);
+            if (!std::isfinite(serialError)) serialError = std::numeric_limits<double>::infinity();
+            maximumSerialError = std::max(maximumSerialError, serialError);
+            const long double difference = std::abs(static_cast<long double>(actualValue) - cell.reference);
+            const long double errorUpper = difference == 0 ? 0 : upward(difference);
+            const long double bound = coordinateBound(cell);
+            // An infinite/unavailable bound is never permission to accept a coordinate.
+            const bool accepted = std::isfinite(serialError) && std::isfinite(errorUpper) &&
+                                  std::isfinite(bound) && errorUpper <= bound;
+            const long double ratio = !std::isfinite(serialError) || !std::isfinite(errorUpper) || !std::isfinite(bound) ||
+                                      (bound == 0 && difference != 0)
+                ? std::numeric_limits<long double>::infinity()
+                : bound == 0 ? 0 : accepted ? std::min(1.0L, divideUp(errorUpper, bound))
+                                           : divideUp(errorUpper, bound);
+            if (ratio > maximumRatio) {
+                maximumRatio = ratio;
+                worstRow = row;
+                worstColumn = column;
+                worstActual = actualValue;
+                worstReference = cell.reference;
+                worstBound = bound;
+            }
+            maximumReferenceError = std::max(maximumReferenceError,
+                std::isfinite(difference) ? difference : std::numeric_limits<long double>::infinity());
+            if (!accepted) ++rejected;
+            if (supportMismatch) ++supportMismatches;
+            if (examples < 8 && (supportMismatch || !accepted)) {
+                std::cout << std::setprecision(std::numeric_limits<long double>::max_digits10)
+                          << "validation_difference row=" << row << " column=" << column
+                          << " actual=" << actualValue << " expected=" << cell.reference
+                          << " serial_expected=" << cell.serial << " abs_error=" << difference
+                          << " error_bound=" << bound << " error_ratio=" << ratio
+                          << " contributions=" << cell.terms << " accepted=" << accepted
+                          << " support_mismatch=" << supportMismatch << '\n';
+                ++examples;
+            }
+        }
+    }
+    validation.maxAbsoluteError = maximumSerialError;
+    validation.passed = rejected == 0;
+    validation.maxErrorRatio = maximumRatio;
+    validation.rejectedCoordinates = rejected;
+    std::cout << std::setprecision(std::numeric_limits<long double>::max_digits10)
+              << "validation_index_base=0 validation_full_rows=" << matrixA.rows
+              << " validation_reference_nnz=" << referenceNnz
+              << " validation_row_nnz_mismatches=" << validation.rowNnzMismatches
+              << " validation_support_mismatches=" << supportMismatches
+              << " validation_rejected_coordinates=" << rejected
+              << " validation_max_abs_error=" << maximumSerialError
+              << " validation_max_reference_error=" << maximumReferenceError
+              << " validation_max_error_ratio=" << maximumRatio
+              << " validation_worst_ratio_row=" << worstRow
+              << " validation_worst_ratio_column=" << worstColumn
+              << " validation_worst_ratio_actual=" << worstActual
+              << " validation_worst_ratio_reference=" << worstReference
+              << " validation_worst_ratio_bound=" << worstBound
+              << " validation_full_seconds="
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() << '\n';
+    return validation;
+}
+// END full-streaming-validation-v2
+
 ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matrixB,
                                  const CsrMatrix& result, ValidationMode mode,
                                  const std::string& partialCacheDirectory) {
@@ -564,9 +814,7 @@ ValidationResult validateProduct(const CsrMatrix& matrixA, const CsrMatrix& matr
     validation.mode = mode;
     if (mode == ValidationMode::None) return validation;
     if (mode == ValidationMode::Full) {
-        validation.maxAbsoluteError = maxAbsoluteDifference(result, serialSpgemm(matrixA, matrixB));
-        validation.passed = validationPassed(*validation.maxAbsoluteError);
-        return validation;
+        return validateFullStreaming(matrixA, matrixB, result);
     }
     validateMultiplicationDimensions(matrixA, matrixB);
     if (result.rows != matrixA.rows || result.cols != matrixB.cols) {
@@ -670,6 +918,10 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
         "\tcommunication_samples_seconds\tcompute_samples_seconds\tend_to_end_samples_seconds"
         "\tfull_product_seconds\tfirst_gather_seconds";
     for (const auto& metric : metrics) header += '\t' + metric.first;
+    // BEGIN roundoff-validation-metadata-v1
+    const auto validationFields = validationMetadata(validation);
+    for (const auto& field : validationFields) header += '\t' + field.first;
+    // END roundoff-validation-metadata-v1
     if (!writeHeader) {
         std::ifstream existing(outputPath);
         std::string existingHeader;
@@ -712,6 +964,9 @@ void appendBenchmarkResult(const std::string& implementation, const Options& opt
            << timingSamplesJson(endToEndSamples) << '\t'
            << fullProductSeconds << '\t' << firstGatherSeconds;
     for (const auto& metric : metrics) output << '\t' << metric.second;
+    // BEGIN roundoff-validation-metadata-v1
+    for (const auto& field : validationFields) output << '\t' << field.second;
+    // END roundoff-validation-metadata-v1
     output << '\n';
     output.flush();
     if (!output) throw std::runtime_error("failed writing results file: " + outputPath.string());
