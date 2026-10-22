@@ -3,8 +3,9 @@
 > **Aggiornamento del 22 ottobre 2026:** il branch `optimizations` implementa ora
 > il [criterio numerico con limite di arrotondamento](numerical-validation.md)
 > con [cache del riferimento completo](full-validation-cache.md).
-> I casi isolati reali sono verificati localmente; i prodotti completi sul cluster
-> restano da verificare. Il recupero usa un nuovo manifest `hv15r-roundoff-cached-v4`
+> I due prodotti completi Two-sided a 4 nodi hanno ora superato il confronto
+> numerico sul cluster; gli altri casi devono ancora essere verificati.
+> Il recupero usa un nuovo manifest `hv15r-roundoff-cached-v4`
 > e una nuova directory, senza modificare la campagna congelata.
 
 ## Problema osservato e limiti della diagnosi
@@ -252,6 +253,64 @@ RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/
 python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" submit-remaining --root "$RECOVERY"
 ```
 
+## Recuperi raggruppati per numero di nodi
+
+Le prime prove complete sul cluster sono entrambe `PASS`: Two-sided a 4 nodi,
+19m22s per l'originale (job 5495939) e 18m49s per la permutata (job 5495941).
+I due riferimenti erano stati preparati in 1h38m14s e 1h42m46s.
+Questi risultati verificano quelle due combinazioni; ogni altro recupero deve
+ancora superare il proprio confronto completo. Dieci prove con quei tempi
+richiederebbero circa 3h11m, ma non è una garanzia per le altre varianti, per
+100/121 nodi o per condizioni diverse del filesystem.
+
+`scripts/group_cresco_hv15r.py` aggiunge una modalità con **una sola allocazione
+da 24 ore per numero di nodi**, eseguendo sequenzialmente tutti i suoi casi
+mancanti. Prima bisogna concludere la campagna originale ed eseguire `finalize`
+con il runner congelato. Se a 1 nodo tutto è già accettato, vengono predisposti
+sette job per 4, 9, 16, 36, 64, 100 e 121 nodi: al massimo otto prove a 4 nodi
+(le due preliminari sono già salvate) e dieci per ciascun altro numero di nodi.
+La selezione effettiva deriva sempre dai risultati, non da questi massimi.
+
+Dopo aver aggiornato il checkout con il lanciatore raggruppato:
+
+```bash
+REPO=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis
+RECOVERY="$REPO/results/tesi-006/hv15r-roundoff-cached-v4"
+python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" finalize --root "$RECOVERY" &&
+python3 "$REPO/scripts/group_cresco_hv15r.py" prepare --root "$RECOVERY"
+```
+
+`prepare` stampa il numero di casi per allocazione e congela soltanto il nuovo
+lanciatore e gli script Slurm in `grouped/metadata`. Non modifica il manifest e
+la cartella `metadata` del recupero, non ricompila e non rigenera i riferimenti.
+Per inviare e monitorare, usare quel lanciatore congelato:
+
+```bash
+python3 "$RECOVERY/grouped/metadata/driver.py" submit --root "$RECOVERY"
+python3 "$RECOVERY/grouped/metadata/driver.py" status --root "$RECOVERY"
+```
+
+Le allocazioni dei diversi numeri di nodi sono indipendenti. Ciascuna conserva
+le risorse originali (2 rank/nodo, 64 CPU/rank, 63 thread/rank, 450000M/nodo,
+esclusiva, 24 ore) e richiama il runner già congelato per ogni prova, con i suoi
+dieci campioni, controlli e salvataggi atomici. Le prove preliminari riuscite e
+gli altri casi già accettati vengono saltati. Le tabelle restano nelle stesse
+directory del recupero, `nN/strong_scaling` e `nN/permutation`.
+
+Usare questa modalità **al posto di `submit-remaining`**. Le ricevute per ogni
+caso e il lock condiviso impediscono invii concorrenti o duplicati tra le due
+modalità. Un caso già inviato separatamente ma senza un risultato accettato
+blocca l'invio del suo gruppo: prima va controllato l'accounting, non annullato
+automaticamente. Una risposta ambigua di `sbatch` blocca nuovi tentativi.
+
+Un fallimento di una singola prova non impedisce di tentare le successive;
+il gruppo termina con codice non zero se rimangono casi falliti. Un timeout può
+interrompere la prova corrente, ma i risultati già salvati rimangono disponibili.
+Non viene effettuato un rilancio automatico. I log sono in
+`logs/grouped-nN/JOBID/launch.log`; `grouped/state/nN.json` registra esiti e tempi
+dei singoli lanci completati. Questi tempi sono durate operative e non sostituiscono
+i timer scientifici nei TSV.
+
 ## Dati per l'analisi
 
 I nuovi TSV sono in `hv15r-roundoff-cached-v4/nN/strong_scaling/trident_*.tsv` e
@@ -263,8 +322,8 @@ su `(azione, matrix_a, matrix_b, nodi, variante)`, conservando provenienza,
 modalità di validazione e manifest delle due build, senza doppioni.
 
 La modalità numerica più forte riguarda solo i recuperi; non rende retroattivamente
-numericamente validate le altre osservazioni parziali. La verifica reale di HV15R
-su CRESCO resta necessaria prima di dichiarare risolto il caso osservato.
+numericamente validate le altre osservazioni parziali. I due PASS preliminari a
+4 nodi non certificano automaticamente le altre varianti o configurazioni.
 
 ## Verifica locale del 22 ottobre 2026
 
@@ -290,3 +349,10 @@ blocco degli invii prematuri, selezione finale aggiornata, conservazione dei
 campioni preliminari, assenza di ricompilazione durante `finalize`, doppio invio,
 ID/nome/proprietario errati e preparazione che parte durante la sostituzione.
 I comandi Slurm di questi test sono simulati; nessun job reale è stato inviato.
+
+Il lanciatore raggruppato supera **11/11 test offline**, inclusi importazione
+del runner congelato in un processo isolato, sintassi Bash degli script generati,
+conservazione delle prove preliminari e dei dieci campioni, invii idempotenti,
+protezione da invii singoli concorrenti, prosecuzione dopo un caso fallito,
+conservazione dei risultati dopo un'interruzione e avvio del job prima della
+pubblicazione della ricevuta di invio. Non sono stati ricompilati i binari numerici.
