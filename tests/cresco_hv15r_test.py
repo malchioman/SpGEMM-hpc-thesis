@@ -57,6 +57,8 @@ class RecoveryTest(unittest.TestCase):
         self.original_manifest = (self.campaign / 'manifest.json').read_bytes()
         self.calls = []
         self.state = 'COMPLETED'
+        early = getattr(self, 'early_probes', False)
+        self.node_states = {n: 'RUNNING' for n in ten.NODES if n != 4} if early else {}
         numeric_metadata = patch.dict(os.environ, MOCK_NUMERIC_BOUND='1')
         numeric_metadata.start()
         self.addCleanup(numeric_metadata.stop)
@@ -64,7 +66,8 @@ class RecoveryTest(unittest.TestCase):
         def scheduler(command, **kwargs):
             self.calls.append(command)
             if command[0] == 'sacct':
-                output = ''.join('%d|%s|\n' % (99001 + i, self.state) for i in range(80))
+                output = ''.join('%d|%s|\n' % (99001 + i, self.node_states.get(j['nodes'], self.state))
+                                 for i, j in enumerate(ten.plan()))
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
             if Path(command[0]).name == 'prepare_full_reference':
                 key = ('a' if 'permuted' not in command[2] else 'b') * 64
@@ -88,7 +91,7 @@ class RecoveryTest(unittest.TestCase):
         with patch.object(recovery.cached, 'build', side_effect=build), \
                 patch.object(recovery, 'compiler_settings', return_value={'compiler': 'same'}), \
                 contextlib.redirect_stdout(io.StringIO()):
-            recovery.prepare(REPO, self.campaign, self.root)
+            recovery.prepare(REPO, self.campaign, self.root, early_probes=early)
         with contextlib.redirect_stdout(io.StringIO()):
             for action in recovery.ACTIONS:
                 recovery.reference(self.root, action)
@@ -264,6 +267,136 @@ class RecoveryTest(unittest.TestCase):
                 self.assertIn('n1-permutation-trident_get', [j['key'] for j in jobs])
             else:
                 self.assertNotIn('n1-permutation-trident_get', [j['key'] for j in jobs])
+        with self.assertRaisesRegex(ValueError, 'result tables changed'):
+            recovery.verify(self.root)
+
+
+class EarlyRecoveryTest(unittest.TestCase):
+    early_probes = True
+    setUp = RecoveryTest.setUp
+    run_probe = RecoveryTest.run_probe
+
+    def test_early_scope_ignores_live_results_but_requires_four_node_jobs_terminal(self):
+        manifest, _ = recovery.verify(self.root)
+        self.assertEqual(manifest['phase'], 'preliminary')
+        self.assertEqual(manifest['probes'], ['n4-trident_two_sided', 'n4-permutation-trident_two_sided'])
+        self.assertEqual(manifest['source_results_sha256'], {})
+        live = self.campaign / 'n121/strong_scaling/live.tsv'
+        live.parent.mkdir(parents=True)
+        live.write_text('the original campaign may still write here')
+        recovery.verify(self.root)
+        self.node_states[4] = 'RUNNING'
+        with self.assertRaisesRegex(ValueError, 'still active'):
+            recovery.verify(self.root)
+        with self.assertRaisesRegex(ValueError, 'still active'):
+            recovery.prepare(REPO, self.campaign, self.root.with_name('another'), early_probes=True)
+        self.assertFalse(self.root.with_name('another').exists())
+        self.node_states[4] = 'UNKNOWN'
+        with self.assertRaisesRegex(ValueError, 'accounting incomplete'):
+            recovery.submit(self.root)
+
+    def test_early_probes_run_with_other_nodes_active_but_no_other_job_can_start(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.submit(self.root)
+            recovery.submit(self.root)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ['sbatch', '--parsable']]), 2)
+        self.run_probe()
+        self.run_probe('permutation')
+        with self.assertRaisesRegex(ValueError, 'run finalize'):
+            recovery.submit(self.root, remaining=True)
+        with self.assertRaisesRegex(ValueError, 'only the four-node probes'):
+            recovery.run(self.root, 'n121-trident_two_sided')
+        with self.assertRaisesRegex(ValueError, 'still active'):
+            recovery.finalize(self.root)
+        self.assertEqual(ten.read(self.root / 'manifest.json')['phase'], 'preliminary')
+
+    def test_early_reference_jobs_can_be_submitted_before_other_nodes_finish(self):
+        for action in recovery.ACTIONS:
+            (self.root / 'reference-ready' / (action + '.json')).unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.submit_references(self.root)
+            recovery.submit_references(self.root)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ['sbatch', '--parsable']]), 2)
+
+    def test_early_probe_fallback_stays_on_four_nodes(self):
+        _, e = ten.runtime(self.campaign)
+        cfg = e.options(['strong_scaling', '--config', str(self.campaign / 'metadata/n4.json'),
+                         '--variants', 'trident_two_sided'])
+        case = next(c for c in e.cases(cfg, 'strong_scaling') if c[0] == 'HV15R')
+        with contextlib.redirect_stdout(io.StringIO()):
+            headers = e.input_preflight(cfg, [('strong_scaling', [case])])
+            e.run_experiment(cfg, 'strong_scaling', [case], headers)
+        new_root = self.root.with_name('early-fallback')
+        def build(source, directory):
+            directory.mkdir()
+            for variant in (*recovery.VARIANTS, 'prepare_full_reference'):
+                (directory / variant).write_text('numeric recovery binary')
+        with patch.object(recovery.cached, 'build', side_effect=build), \
+                patch.object(recovery, 'compiler_settings', return_value={'compiler': 'same'}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            recovery.prepare(REPO, self.campaign, new_root, early_probes=True)
+        manifest, _ = recovery.verify(new_root)
+        self.assertEqual(manifest['probes'], ['n4-trident_hybrid', 'n4-permutation-trident_two_sided'])
+
+    def test_finished_four_node_results_still_cannot_change(self):
+        path = self.campaign / 'n4/strong_scaling/new.tsv'
+        path.parent.mkdir(parents=True)
+        path.write_text('unexpected write after the four-node jobs ended')
+        with self.assertRaisesRegex(ValueError, 'result tables changed'):
+            recovery.verify(self.root)
+
+    def test_finalize_requires_both_successful_probes(self):
+        self.node_states.clear()
+        with self.assertRaisesRegex(ValueError, 'probe has not passed'):
+            recovery.finalize(self.root)
+        self.run_probe()
+        with self.assertRaisesRegex(ValueError, 'n4-permutation-trident_two_sided'):
+            recovery.finalize(self.root)
+        with patch.dict(os.environ, MOCK_FAILURE='validation'), self.assertRaises(RuntimeError):
+            self.run_probe('permutation')
+        with self.assertRaisesRegex(ValueError, 'probe has not passed'):
+            recovery.finalize(self.root)
+
+    def test_finalize_excludes_new_source_successes_preserves_probes_and_reuses_build(self):
+        self.run_probe()
+        self.run_probe('permutation')
+        before = ten.read(self.root / 'manifest.json')
+        probe_tables = {p: p.read_bytes() for p in (self.root / 'n4').glob('*/*.tsv')}
+        base, e = ten.runtime(self.campaign)
+        cfg = e.options(['strong_scaling', '--config', str(self.campaign / 'metadata/n1.json'),
+                         '--variants', 'trident_get'])
+        for action in recovery.ACTIONS:
+            case = next(c for c in e.cases(cfg, action) if c[0] == 'HV15R')
+            with contextlib.redirect_stdout(io.StringIO()):
+                headers = e.input_preflight(cfg, [(action, [case])])
+                e.run_experiment(cfg, action, [case], headers)
+        recovery.verify(self.root)  # Live results from nodes other than four do not block probes.
+        self.node_states.clear()
+        original_results = recovery.result_snapshot(self.campaign)
+        call_count = len(self.calls)
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.finalize(self.root)
+        after, _ = recovery.verify(self.root)
+        self.assertEqual(after['phase'], 'final')
+        self.assertEqual(len(after['jobs']), 78)
+        self.assertNotIn('n1-trident_get', [j['key'] for j in after['jobs']])
+        self.assertNotIn('n1-permutation-trident_get', [j['key'] for j in after['jobs']])
+        self.assertEqual(after['sha256'], before['sha256'])
+        self.assertEqual(after['reference_jobs'], before['reference_jobs'])
+        self.assertEqual(after['source_results_sha256'], original_results)
+        self.assertEqual(recovery.result_snapshot(self.campaign), original_results)
+        self.assertEqual({p: p.read_bytes() for p in probe_tables}, probe_tables)
+        self.assertTrue(all(c[0] == 'sacct' for c in self.calls[call_count:]))
+        final_bytes = (self.root / 'manifest.json').read_bytes()
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.finalize(self.root)
+            recovery.submit(self.root, remaining=True)
+        self.assertEqual((self.root / 'manifest.json').read_bytes(), final_bytes)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ['sbatch', '--parsable']]), 76)
+        self.assertEqual((self.campaign / 'manifest.json').read_bytes(), self.original_manifest)
+        live = self.campaign / 'n121/strong_scaling/new.tsv'
+        live.parent.mkdir(parents=True)
+        live.write_text('no longer allowed once final')
         with self.assertRaisesRegex(ValueError, 'result tables changed'):
             recovery.verify(self.root)
 

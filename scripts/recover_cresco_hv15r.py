@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Recover missing Trident HV15R square cases, original and permuted, with numeric validation.
 
-The cached campaign must have terminated. Never edit its snapshots, references or TSVs.
+Normally the cached campaign must have terminated. --early-probes only requires
+the original four-node jobs to have ended; finalize waits for the entire campaign.
+Never edit its snapshots, references or TSVs.
 One (action, nodes, variant) per job, original ten samples/resources, Full streaming validation.
 """
 import argparse
@@ -43,9 +45,11 @@ CMAKE_ADDITIONS = (
 )
 
 
-def finished_source(source, manifest):
+def finished_source(source, manifest, nodes=None):
     ids = []
     for job in manifest['jobs']:
+        if nodes is not None and job['nodes'] not in nodes:
+            continue
         path = source / 'submission' / (job['key'] + '.json')
         value = ten.read(path).get('job_id', '')
         if not str(value).isdigit():
@@ -64,11 +68,11 @@ def finished_source(source, manifest):
     return states
 
 
-def validate_source(source):
+def validate_source(source, nodes=None):
     manifest = ten.verify(source)
     if manifest.get('schema') != 'partial10-cached-v1' or manifest['jobs'] != ten.plan():
         raise ValueError('Expected the unchanged tesi-006 cached campaign')
-    finished_source(source, manifest)
+    finished_source(source, manifest, nodes)
     return manifest
 
 
@@ -134,9 +138,10 @@ def guard_sources(repo, source):
         raise ValueError('Production CMake options changed')
 
 
-def result_snapshot(source):
+def result_snapshot(source, nodes=None):
     return {p.relative_to(source).as_posix(): ten.digest(p)
-            for p in source.glob('n*/*/*.tsv') if p.is_file()}
+            for p in source.glob('n*/*/*.tsv') if p.is_file()
+            and (nodes is None or p.relative_to(source).parts[0] in {'n%d' % n for n in nodes})}
 
 
 def compiler_settings(build):
@@ -160,17 +165,17 @@ def compiler_settings(build):
     return selected
 
 
-def missing_jobs(source):
+def missing_jobs(source, nodes=None, read_results=True):
     base, e = ten.runtime(source)
     jobs = []
-    for nodes in ten.NODES:
-        cfg = e.options(['strong_scaling', '--config', str(source / ('metadata/n%d.json' % nodes))])
+    for node_count in (ten.NODES if nodes is None else nodes):
+        cfg = e.options(['strong_scaling', '--config', str(source / ('metadata/n%d.json' % node_count))])
         required = dict(repeats=10, trials=1, runs=1, warmup=0, validate='partial',
                         ranks_per_node=2, threads=63, cpus_per_rank=64, schedule='guided', chunk=64)
         if any(getattr(cfg, key) != value for key, value in required.items()):
             raise ValueError('Unexpected source measurement configuration')
         for action in ACTIONS:
-            done = base.existing(e, cfg, action)
+            done = base.existing(e, cfg, action) if read_results else set()
             cases = [c for c in e.cases(cfg, action) if c[0] == 'HV15R']
             if len(cases) != 1:
                 raise ValueError('Expected one original/permuted HV15R case: ' + action)
@@ -178,8 +183,8 @@ def missing_jobs(source):
             for variant in VARIANTS:
                 if (variant,) + pair not in done:
                     suffix = variant if action == 'strong_scaling' else action + '-' + variant
-                    key = 'n%d-%s' % (nodes, suffix)
-                    jobs.append(dict(key=key, nodes=nodes, action=action, variant=variant, pair=list(pair),
+                    key = 'n%d-%s' % (node_count, suffix)
+                    jobs.append(dict(key=key, nodes=node_count, action=action, variant=variant, pair=list(pair),
                                      script='metadata/jobs/' + key + '.sbatch'))
     return jobs
 
@@ -207,16 +212,28 @@ def batch(root, job):
                     'run', '--root', str(root), '--key', key]), ''])
 
 
-def prepare(repo, source, root, reference_cache_dir=None):
+def prepare(repo, source, root, reference_cache_dir=None, early_probes=False):
     cached.compute_node()
     if ten.below(root, source) or ten.below(source, root):
         raise ValueError('Recovery and source roots must not overlap')
     reference_cache_dir = reference_cache_dir or root / 'references'
     if ten.below(reference_cache_dir, source) or ten.below(source, reference_cache_dir):
         raise ValueError('Reference cache must not overlap the source campaign')
-    original = validate_source(source)
+    scope = (4,) if early_probes else None
+    original = validate_source(source, scope)
     guard_sources(repo, source)
-    jobs = missing_jobs(source)
+    if early_probes:
+        # Only inspect results whose writers are known to be terminal. Other cases
+        # are candidates, not a claim that the still-running campaign missed them.
+        four_node_jobs = missing_jobs(source, nodes=(4,))
+        if any(not any(j['action'] == action for j in four_node_jobs) for action in ACTIONS):
+            raise ValueError('Early probes require a missing four-node case for each HV15R product')
+        jobs = four_node_jobs + missing_jobs(source, nodes=tuple(n for n in ten.NODES if n != 4),
+                                            read_results=False)
+        jobs.sort(key=lambda j: (ten.NODES.index(j['nodes']), ACTIONS.index(j['action']),
+                                 VARIANTS.index(j['variant'])))
+    else:
+        jobs = missing_jobs(source)
     if not jobs:
         print('No missing Trident HV15R square cases; nothing prepared.')
         return
@@ -249,7 +266,7 @@ def prepare(repo, source, root, reference_cache_dir=None):
         ten.write(root / job['script'], batch(root, job))
     probes = []
     for action in ACTIONS:
-        candidates = [j for j in jobs if j['action'] == action]
+        candidates = [j for j in jobs if j['action'] == action and (not early_probes or j['nodes'] == 4)]
         if candidates:
             probe = next((j for j in candidates if j['nodes'] == 4 and j['variant'] == 'trident_two_sided'),
                          candidates[0])
@@ -261,7 +278,8 @@ def prepare(repo, source, root, reference_cache_dir=None):
         ten.write(root / ref['script'], reference_batch(root, ref['key']))
     manifest = dict(schema=SCHEMA, source=str(source), source_manifest_sha256=ten.digest(source / 'manifest.json'),
                     source_snapshot_sha256=original['sha256'], jobs=jobs, probes=probes,
-                    source_results_sha256=result_snapshot(source), reference_jobs=references,
+                    source_results_sha256=result_snapshot(source, scope), reference_jobs=references,
+                    phase='preliminary' if early_probes else 'final',
                     full_cache=str(reference_cache_dir), reference_policy='required-read-only',
                     validation='streaming_roundoff_v2', criterion='componentwise_dot_bound_v1',
                     compiler=current, checks=str(root / 'checks'))
@@ -272,6 +290,9 @@ def prepare(repo, source, root, reference_cache_dir=None):
     ten.write(root / 'manifest.json', manifest)
     print('Prepared %d single-case jobs + %d shared numeric references. Probes: %s. Nothing submitted.' %
           (len(jobs), len(references), ', '.join(probes)))
+    if early_probes:
+        print('PRELIMINARY ONLY: references and four-node probes may run now. '
+              'Other cases are candidates; finalize after the source campaign ends.')
 
 
 def verify(root):
@@ -281,10 +302,50 @@ def verify(root):
     source = Path(manifest['source'])
     if ten.digest(source / 'manifest.json') != manifest['source_manifest_sha256']:
         raise ValueError('Source manifest changed')
-    validate_source(source)
-    if result_snapshot(source) != manifest['source_results_sha256']:
+    phase = manifest.get('phase', 'final')  # Existing v4 snapshots retain their strict gate.
+    if phase not in ('preliminary', 'final'):
+        raise ValueError('Unknown recovery phase')
+    scope = (4,) if phase == 'preliminary' else None
+    if scope and any(j['nodes'] != 4 for j in manifest['jobs'] if j['key'] in manifest['probes']):
+        raise ValueError('Early probes must use four nodes')
+    validate_source(source, scope)
+    if result_snapshot(source, scope) != manifest['source_results_sha256']:
         raise ValueError('Source result tables changed after recovery preparation')
     return manifest, source
+
+
+def require_passed_probes(root, source, manifest):
+    probes = [next(j for j in manifest['jobs'] if j['key'] == key) for key in manifest['probes']]
+    for probe in probes:
+        state = root / 'state' / (probe['key'] + '.json')
+        if not state.is_file() or not ten.read(state).get('complete') or not complete(root, source, probe):
+            raise ValueError('HV15R numeric probe has not passed: ' + probe['key'] +
+                             '. Remaining jobs are not authorized by this gate.')
+
+
+def finalize(root):
+    """Freeze the final missing-case selection without rebuilding or losing probe samples."""
+    with ten.file_lock(root / 'submission'):
+        manifest, source = verify(root)
+        if manifest.get('phase', 'final') == 'final':
+            print('Recovery plan already final; nothing changed.')
+            return
+        validate_source(source)  # All original jobs, including pending 100/121-node jobs.
+        require_passed_probes(root, source, manifest)
+        require_references(root, manifest)
+        jobs = missing_jobs(source)
+        known = {j['key']: j for j in manifest['jobs']}
+        if any(known.get(j['key']) != j for j in jobs):
+            raise ValueError('Final cases differ from the prepared candidates')
+        # Keep successful probe observations in the manifest and final data set.
+        for key in manifest['probes']:
+            if key not in {j['key'] for j in jobs}:
+                jobs.append(known[key])
+        manifest['preliminary_source_results_sha256'] = manifest['source_results_sha256']
+        manifest.update(phase='final', jobs=jobs, source_results_sha256=result_snapshot(source))
+        ten.write(root / 'manifest.json', manifest)
+        print('FINAL PLAN: %d cases, including %d preserved probes. Nothing submitted or rebuilt.' %
+              (len(jobs), len(manifest['probes'])))
 
 
 def runtime(root, source, nodes, variant, action='strong_scaling'):
@@ -409,14 +470,12 @@ def submit_references(root):
 
 def submit(root, remaining=False):
     manifest, source = verify(root)
+    if remaining and manifest.get('phase') == 'preliminary':
+        raise ValueError('Preliminary plan: run finalize after all source jobs have ended')
     require_references(root, manifest)
     probes = [next(j for j in manifest['jobs'] if j['key'] == key) for key in manifest['probes']]
     if remaining:
-        for probe in probes:
-            state = root / 'state' / (probe['key'] + '.json')
-            if not state.is_file() or not ten.read(state).get('complete') or not complete(root, source, probe):
-                raise ValueError('HV15R numeric probe has not passed: ' + probe['key'] +
-                                 '. Remaining jobs are not authorized by this gate.')
+        require_passed_probes(root, source, manifest)
         selected = [j for j in manifest['jobs'] if j['key'] not in manifest['probes']]
     else:
         selected = probes
@@ -451,6 +510,8 @@ def submit(root, remaining=False):
 
 def run(root, key):
     manifest, source = verify(root)
+    if manifest.get('phase') == 'preliminary' and key not in manifest['probes']:
+        raise ValueError('Preliminary plan permits only the four-node probes; finalize first')
     require_references(root, manifest, key=next(j['action'] for j in manifest['jobs'] if j['key'] == key))
     job = next(j for j in manifest['jobs'] if j['key'] == key)
     base, e, cfg = runtime(root, source, job['nodes'], job['variant'], job['action'])
@@ -473,19 +534,25 @@ def run(root, key):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'submit-references', 'reference', 'submit-probe', 'submit-remaining', 'run', 'status'))
+    parser.add_argument('action', choices=('prepare', 'finalize', 'submit-references', 'reference', 'submit-probe', 'submit-remaining', 'run', 'status'))
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--key')
     parser.add_argument('--reference-cache-dir', type=Path, help='shared filesystem directory with room for numeric references')
+    parser.add_argument('--early-probes', action='store_true',
+                        help='prepare references and four-node probes while other source node counts are still active')
     args = parser.parse_args()
+    if args.early_probes and args.action != 'prepare':
+        parser.error('--early-probes is only valid with prepare')
     root = args.root.resolve()
     if args.action == 'prepare':
         if args.source is None:
             parser.error('prepare requires --source')
         prepare(args.repo.resolve(), args.source.resolve(), root,
-                args.reference_cache_dir.resolve() if args.reference_cache_dir else None)
+                args.reference_cache_dir.resolve() if args.reference_cache_dir else None, args.early_probes)
+    elif args.action == 'finalize':
+        finalize(root)
     elif args.action == 'submit-references':
         submit_references(root)
     elif args.action == 'reference':
@@ -500,9 +567,14 @@ def main():
         run(root, args.key)
     else:
         manifest, source = verify(root)
+        preliminary = manifest.get('phase') == 'preliminary'
+        if preliminary:
+            print('PRELIMINARY: references and four-node probes only; final recovery selection is pending.')
         for ref in manifest['reference_jobs']:
             print('REFERENCE ' + ref['key'] + ': ' + ('READY' if (root / 'reference-ready' / (ref['key'] + '.json')).is_file() else 'MISSING/PENDING'))
         for job in manifest['jobs']:
+            if preliminary and job['key'] not in manifest['probes']:
+                continue
             print(job['key'] + ': ' + ('PASS' if complete(root, source, job) else 'MISSING/FAILED/PENDING'))
         receipts = list((root / 'submission').glob('*.json')) + list((root / 'reference-submission').glob('*.json'))
         ids = [str(ten.read(p)['job_id']) for p in receipts
