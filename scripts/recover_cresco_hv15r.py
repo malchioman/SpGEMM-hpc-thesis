@@ -22,8 +22,12 @@ VARIANTS = ten.VARIANTS[3:]
 ACTIONS = ('strong_scaling', 'permutation')
 TERMINAL = {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY',
             'NODE_FAIL', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE', 'REVOKED'}
-SCHEMA = 'hv15r-roundoff-v3'
+SCHEMA = 'hv15r-roundoff-cached-v4'
+CACHE_SOURCES = {'common/full_reference.cpp', 'common/full_reference.hpp', 'common/prepare_full_reference.cpp'}
 CMAKE_ADDITIONS = (
+    '# BEGIN full-reference-cache-v1\nadd_executable(prepare_full_reference src/common/prepare_full_reference.cpp)\ntarget_link_libraries(prepare_full_reference PRIVATE spgemm_support)\nenable_project_warnings(prepare_full_reference)\nadd_executable(full_reference_test tests/full_reference_test.cpp)\ntarget_link_libraries(full_reference_test PRIVATE spgemm_support)\nenable_project_warnings(full_reference_test)\nadd_test(NAME full_reference COMMAND full_reference_test ${CMAKE_CURRENT_BINARY_DIR}/full-reference-test)\n# END full-reference-cache-v1\n\n',
+    '        src/common/full_reference.cpp src/common/full_reference.hpp src/common/prepare_full_reference.cpp\n',
+    '    src/common/full_reference.cpp\n',
     'add_executable(spgemm_full_streaming tests/spgemm_full_streaming.cpp)\n'
     'target_link_libraries(spgemm_full_streaming PRIVATE spgemm_support)\n'
     'enable_project_warnings(spgemm_full_streaming)\n'
@@ -68,7 +72,21 @@ def validate_source(source):
     return manifest
 
 
+def original_cache(text):
+    text = re.sub(r'^[ \t]*// BEGIN full-reference-cache-v1\n.*?'
+                  r'^[ \t]*// END full-reference-cache-v1\n', '', text, flags=re.M | re.S)
+    text = text.replace('(argument == "--partial-cache" || argument == "--full-cache")', 'argument == "--partial-cache"')
+    text = text.replace('const std::string& partialCacheDirectory, const std::string& fullCacheDirectory)',
+                        'const std::string& partialCacheDirectory)')
+    text = text.replace('const std::string& partialCacheDirectory = "",\n                                 const std::string& fullCacheDirectory = "")',
+                        'const std::string& partialCacheDirectory = "")')
+    text = text.replace('options.partialCacheDirectory, options.fullCacheDirectory)', 'options.partialCacheDirectory)')
+    return text.replace('validateFullStreaming(matrixA, matrixB, result, fullCacheDirectory)',
+                        'validateFullStreaming(matrixA, matrixB, result)')
+
+
 def original_metadata(text):
+    text = original_cache(text)
     text = re.sub(r'^[ \t]*// BEGIN roundoff-validation-metadata-v1\n.*?'
                   r'^[ \t]*// END roundoff-validation-metadata-v1\n', '', text, flags=re.M | re.S)
     return re.sub(r'\n{3,}', '\n\n', text)
@@ -76,6 +94,7 @@ def original_metadata(text):
 
 def original_common(text):
     """Remove exactly the approved post-timing validator addition for comparison."""
+    text = original_cache(text)
     start = '// BEGIN full-streaming-validation-v2\n'
     end = '// END full-streaming-validation-v2\n\n'
     if text.count(start) != 1 or text.count(end) != 1:
@@ -95,11 +114,11 @@ def guard_sources(repo, source):
     old = source / 'metadata/source'
     old_files = {p.relative_to(old / 'src') for p in (old / 'src').rglob('*') if p.is_file()}
     new_files = {p.relative_to(repo / 'src') for p in (repo / 'src').rglob('*') if p.is_file()}
-    if old_files != new_files:
+    if {p.as_posix() for p in new_files - old_files} != CACHE_SOURCES or old_files - new_files:
         raise ValueError('Production source file set changed')
     for relative in old_files:
         before = (old / 'src' / relative).read_text(encoding='utf-8')
-        after = (repo / 'src' / relative).read_text(encoding='utf-8')
+        after = original_cache((repo / 'src' / relative).read_text(encoding='utf-8'))
         if relative.as_posix() == 'common/spgemm_common.cpp':
             after = original_common(after)
         elif relative.as_posix() in ('common/spgemm_common.hpp', 'trident/common/benchmark.cpp'):
@@ -188,10 +207,13 @@ def batch(root, job):
                     'run', '--root', str(root), '--key', key]), ''])
 
 
-def prepare(repo, source, root):
+def prepare(repo, source, root, reference_cache_dir=None):
     cached.compute_node()
     if ten.below(root, source) or ten.below(source, root):
         raise ValueError('Recovery and source roots must not overlap')
+    reference_cache_dir = reference_cache_dir or root / 'references'
+    if ten.below(reference_cache_dir, source) or ten.below(source, reference_cache_dir):
+        raise ValueError('Reference cache must not overlap the source campaign')
     original = validate_source(source)
     guard_sources(repo, source)
     jobs = missing_jobs(source)
@@ -210,16 +232,16 @@ def prepare(repo, source, root):
     env = dict(os.environ, OMP_NUM_THREADS='1', OMPI_MCA_btl_vader_single_copy_mechanism='none')
     # The MPI regression uses eight local ranks with two threads each (16 allocated CPUs).
     subprocess.run(['ctest', '--test-dir', str(root / 'metadata/build'), '--output-on-failure',
-                    '-R', '^(spgemm_full_streaming|spgemm_validation_smoke|full_streaming_mpi)$'],
+                    '-R', '^(full_reference|spgemm_full_streaming|spgemm_validation_smoke|full_streaming_mpi)$'],
                    check=True, env=env)
     bins = root / 'metadata/bin'
     bins.mkdir()
-    for variant in VARIANTS:
+    for variant in (*VARIANTS, 'prepare_full_reference'):
         shutil.copy2(root / 'metadata/build' / variant, bins / variant)
     for nodes in ten.NODES:
         config = ten.read(source / ('metadata/n%d.json' % nodes))
         config.update(build_dir=str(bins), results_dir=str(root / ('n%d' % nodes)),
-                      validate=True, partial_cache=None, matrices=['HV15R'],
+                      validate=True, partial_cache=None, full_cache=str(reference_cache_dir), matrices=['HV15R'],
                       permutation_matrices=['HV15R'], variants=list(VARIANTS))
         ten.write(root / ('metadata/n%d.json' % nodes), config)
     for job in jobs:
@@ -232,9 +254,15 @@ def prepare(repo, source, root):
             probe = next((j for j in candidates if j['nodes'] == 4 and j['variant'] == 'trident_two_sided'),
                          candidates[0])
             probes.append(probe['key'])
+    references = [dict(key=action, pair=next(j['pair'] for j in jobs if j['action'] == action),
+                       script='metadata/reference-jobs/' + action + '.sbatch')
+                  for action in ACTIONS if any(j['action'] == action for j in jobs)]
+    for ref in references:
+        ten.write(root / ref['script'], reference_batch(root, ref['key']))
     manifest = dict(schema=SCHEMA, source=str(source), source_manifest_sha256=ten.digest(source / 'manifest.json'),
                     source_snapshot_sha256=original['sha256'], jobs=jobs, probes=probes,
-                    source_results_sha256=result_snapshot(source),
+                    source_results_sha256=result_snapshot(source), reference_jobs=references,
+                    full_cache=str(reference_cache_dir), reference_policy='required-read-only',
                     validation='streaming_roundoff_v2', criterion='componentwise_dot_bound_v1',
                     compiler=current, checks=str(root / 'checks'))
     manifest['sha256'] = {p.relative_to(root).as_posix(): ten.digest(p)
@@ -242,7 +270,8 @@ def prepare(repo, source, root):
                           and 'build' not in p.relative_to(root / 'metadata').parts
                           and '__pycache__' not in p.parts}
     ten.write(root / 'manifest.json', manifest)
-    print('Prepared %d single-case jobs. Probes: %s. Nothing submitted.' % (len(jobs), ', '.join(probes)))
+    print('Prepared %d single-case jobs + %d shared numeric references. Probes: %s. Nothing submitted.' %
+          (len(jobs), len(references), ', '.join(probes)))
 
 
 def verify(root):
@@ -291,8 +320,96 @@ def complete(root, source, job):
     return (job['variant'],) + tuple(job['pair']) in base.existing(e, cfg, job['action'])
 
 
+def reference_batch(root, key):
+    return '\n'.join([
+        '#!/usr/bin/env bash', '#SBATCH --job-name=hvref-' + key,
+        '#SBATCH --partition=cresco8_cpu', '#SBATCH --nodes=1', '#SBATCH --ntasks=1',
+        '#SBATCH --cpus-per-task=1', '#SBATCH --mem=450000M', '#SBATCH --exclusive',
+        '#SBATCH --hint=nomultithread', '#SBATCH --time=24:00:00',
+        '#SBATCH --output=' + str(root / 'logs' / ('reference-' + key + '-%j.log')),
+        '#SBATCH --error=' + str(root / 'logs' / ('reference-' + key + '-%j.log')),
+        'set -euo pipefail', 'source /usr/share/Modules/init/bash',
+        'module load intel/oneapi mpi_flavour/openmpi_intel-4.1.7',
+        'export OMP_NUM_THREADS=1',
+        shlex.join(['python3', str(root / 'metadata/source/scripts/recover_cresco_hv15r.py'),
+                    'reference', '--root', str(root), '--key', key]), ''])
+
+
+def reference(root, key):
+    cached.compute_node()
+    manifest, source = verify(root)
+    ref = next(r for r in manifest['reference_jobs'] if r['key'] == key)
+    _, e, cfg = runtime(root, source, 1, VARIANTS[0], key)
+    cached.check_input_metadata(source, cfg)
+    cases = [c for c in e.cases(cfg, key) if c[0] == 'HV15R']
+    if len(cases) != 1 or list(p.relative_to(cfg.matrix_dir).as_posix() for p in cases[0][2:]) != ref['pair']:
+        raise ValueError('Unexpected reference inputs')
+    e.input_preflight(cfg, [(key, cases)])
+    generator = root / 'metadata/bin/prepare_full_reference'
+    result = subprocess.run([str(generator), '--matrix-a', str(cases[0][2]), '--matrix-b', str(cases[0][3]),
+                             '--full-cache', manifest['full_cache']], capture_output=True, text=True)
+    print(result.stdout, end='', flush=True)
+    print(result.stderr, end='', file=sys.stderr, flush=True)
+    result.check_returncode()
+    match = re.search(r'\bvalidation_reference_key=([0-9a-f]{64})\b', result.stdout)
+    if not match:
+        raise ValueError('Numeric generator did not report its reference identity')
+    path = Path(manifest['full_cache']) / (match[1] + '.sfull')
+    receipt = root / 'reference-ready' / (key + '.json')
+    ten.write(receipt, dict(pair=ref['pair'], key=match[1], generator_sha256=ten.digest(generator),
+                           bytes=path.stat().st_size, criterion='componentwise_dot_bound_v1'))
+    print('FULL REFERENCE READY: ' + key + ' bytes=' + str(path.stat().st_size))
+
+
+def require_references(root, manifest, key=None):
+    for ref in manifest['reference_jobs']:
+        if key is not None and ref['key'] != key:
+            continue
+        receipt = root / 'reference-ready' / (ref['key'] + '.json')
+        if not receipt.is_file():
+            raise ValueError('Numeric reference not ready: ' + ref['key'] + '; run submit-references first')
+        record = ten.read(receipt)
+        if (not re.fullmatch(r'[0-9a-f]{64}', record.get('key', '')) or record.get('pair') != ref['pair'] or
+                record.get('criterion') != 'componentwise_dot_bound_v1' or
+                record.get('generator_sha256') != ten.digest(root / 'metadata/bin/prepare_full_reference')):
+            raise ValueError('Invalid numeric reference receipt: ' + ref['key'])
+        path = Path(manifest['full_cache']) / (record['key'] + '.sfull')
+        if not path.is_file() or path.stat().st_size != record.get('bytes') or path.stat().st_size < 176:
+            raise ValueError('Numeric reference missing/truncated: ' + str(path))
+        # The executable checks full content SHA-256 while streaming every comparison.
+        with path.open('rb') as stream:
+            if stream.read(72) != b'SPFR0001' + record['key'].encode('ascii'):
+                raise ValueError('Incompatible numeric reference header: ' + str(path))
+
+
+def submit_references(root):
+    manifest, _ = verify(root)
+    with ten.file_lock(root / 'reference-submission'):
+        for ref in manifest['reference_jobs']:
+            ready = root / 'reference-ready' / (ref['key'] + '.json')
+            if ready.exists():
+                require_references(root, manifest, ref['key'])
+                continue
+            receipt = root / 'reference-submission' / (ref['key'] + '.json')
+            if receipt.exists():
+                if not str(ten.read(receipt).get('job_id', '')).isdigit():
+                    raise ValueError('Ambiguous reference submission: ' + str(receipt))
+                continue
+            command = ['sbatch', '--parsable', str(root / ref['script'])]
+            subprocess.run(['sbatch', '--test-only', str(root / ref['script'])], check=True)
+            with receipt.open('x', encoding='utf-8') as stream:
+                json.dump(dict(state='submitting', command=command), stream)
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            job_id = result.stdout.strip().split(';')[0]
+            if not job_id.isdigit():
+                raise ValueError('Unexpected reference sbatch response: ' + result.stdout)
+            ten.write(receipt, dict(job_id=job_id, command=command))
+            print('REFERENCE ' + ref['key'] + ' JOB=' + job_id, flush=True)
+
+
 def submit(root, remaining=False):
     manifest, source = verify(root)
+    require_references(root, manifest)
     probes = [next(j for j in manifest['jobs'] if j['key'] == key) for key in manifest['probes']]
     if remaining:
         for probe in probes:
@@ -334,6 +451,7 @@ def submit(root, remaining=False):
 
 def run(root, key):
     manifest, source = verify(root)
+    require_references(root, manifest, key=next(j['action'] for j in manifest['jobs'] if j['key'] == key))
     job = next(j for j in manifest['jobs'] if j['key'] == key)
     base, e, cfg = runtime(root, source, job['nodes'], job['variant'], job['action'])
     from allocated_experiment import check_allocation
@@ -355,17 +473,25 @@ def run(root, key):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'submit-probe', 'submit-remaining', 'run', 'status'))
+    parser.add_argument('action', choices=('prepare', 'submit-references', 'reference', 'submit-probe', 'submit-remaining', 'run', 'status'))
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--key')
+    parser.add_argument('--reference-cache-dir', type=Path, help='shared filesystem directory with room for numeric references')
     args = parser.parse_args()
     root = args.root.resolve()
     if args.action == 'prepare':
         if args.source is None:
             parser.error('prepare requires --source')
-        prepare(args.repo.resolve(), args.source.resolve(), root)
+        prepare(args.repo.resolve(), args.source.resolve(), root,
+                args.reference_cache_dir.resolve() if args.reference_cache_dir else None)
+    elif args.action == 'submit-references':
+        submit_references(root)
+    elif args.action == 'reference':
+        if not args.key:
+            parser.error('reference requires --key strong_scaling or permutation')
+        reference(root, args.key)
     elif args.action.startswith('submit-'):
         submit(root, args.action == 'submit-remaining')
     elif args.action == 'run':
@@ -374,9 +500,12 @@ def main():
         run(root, args.key)
     else:
         manifest, source = verify(root)
+        for ref in manifest['reference_jobs']:
+            print('REFERENCE ' + ref['key'] + ': ' + ('READY' if (root / 'reference-ready' / (ref['key'] + '.json')).is_file() else 'MISSING/PENDING'))
         for job in manifest['jobs']:
             print(job['key'] + ': ' + ('PASS' if complete(root, source, job) else 'MISSING/FAILED/PENDING'))
-        ids = [str(ten.read(p)['job_id']) for p in (root / 'submission').glob('*.json')
+        receipts = list((root / 'submission').glob('*.json')) + list((root / 'reference-submission').glob('*.json'))
+        ids = [str(ten.read(p)['job_id']) for p in receipts
                if str(ten.read(p).get('job_id', '')).isdigit()]
         if ids:
             subprocess.run(['sacct', '-X', '-j', ','.join(ids),

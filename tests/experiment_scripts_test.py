@@ -23,6 +23,18 @@ import prepare_sbatchman as planner  # runner adds scripts/ to the import path
 
 
 class CampaignTest(unittest.TestCase):
+    def test_full_cache_requires_numeric_validation_and_skips_small_pilots(self):
+        cache = str(self.root / 'references')
+        for mode in ('--partial', '--no-validate'):
+            with self.assertRaisesRegex(ValueError, 'requires numeric Full'):
+                runner.options(['strong_scaling', '--config', str(self.config), '--full-cache', cache, mode])
+        cfg = runner.options(['strong_scaling', '--config', str(self.config), '--full-cache', cache, '--validate'])
+        case = runner.cases(cfg, 'strong_scaling')[0]
+        command = runner.command(cfg, 'strong_scaling', case, 'trident_get', 1, self.root / 'out.tsv')
+        self.assertIn('--full-cache', command)
+        self.assertEqual(command[command.index('--full-cache') + 1], cache)
+        self.assertNotIn('--full-cache', runner.command(cfg, 'pilot', case, 'trident_get', 1, self.root / 'pilot.tsv'))
+
     def test_roundoff_ratio_is_not_rounded_down_into_an_accepted_value(self):
         self.run_action('strong_scaling', '--variants', 'trident_get')
         row = self.rows('strong_scaling')[0]

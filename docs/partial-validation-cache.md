@@ -360,3 +360,7 @@ Su matrici minuscole dei test, l'inizializzazione di SHA-256 può invece costare
 più del prodotto sequenziale. I log e i TSV locali sono conservati in
 `build-wsl/cache-comparison-20261021/`, con tutte le osservazioni in
 `comparison.json`; il comando sopra consente una ripetizione in una nuova cartella.
+
+La cache Full è distinta da quella dei conteggi: vedere
+[full-validation-cache.md](full-validation-cache.md) per preparazione e riuso
+del riferimento numerico completo senza modificare il criterio di confronto.

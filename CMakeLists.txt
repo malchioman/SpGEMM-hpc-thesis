@@ -18,6 +18,7 @@ find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 set(reference_identity "partial-reference-v1;${CMAKE_SYSTEM_PROCESSOR};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE};${CMAKE_CXX_FLAGS_DEBUG};${CMAKE_CXX_FLAGS_RELWITHDEBINFO};${CMAKE_CXX_FLAGS_MINSIZEREL};${OpenMP_CXX_FLAGS};${CMAKE_BUILD_TYPE}")
 foreach(source IN ITEMS src/common/spgemm_common.cpp src/common/spgemm_common.hpp
         src/common/partial_reference.cpp src/common/partial_reference.hpp
+        src/common/full_reference.cpp src/common/full_reference.hpp src/common/prepare_full_reference.cpp
         src/common/matrix_market.cpp src/common/matrix_market.hpp src/common/csr_matrix.hpp CMakeLists.txt)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" source_hash)
@@ -44,6 +45,7 @@ enable_project_warnings(matrix_market)
 add_library(spgemm_support STATIC
     src/common/spgemm_common.cpp
     src/common/partial_reference.cpp
+    src/common/full_reference.cpp
     src/common/benchmark_metrics.cpp
 )
 target_compile_features(spgemm_support PUBLIC cxx_std_17)
@@ -56,6 +58,16 @@ enable_project_warnings(spgemm_support)
 add_executable(prepare_partial_reference src/common/prepare_partial_reference.cpp)
 target_link_libraries(prepare_partial_reference PRIVATE spgemm_support)
 enable_project_warnings(prepare_partial_reference)
+
+# BEGIN full-reference-cache-v1
+add_executable(prepare_full_reference src/common/prepare_full_reference.cpp)
+target_link_libraries(prepare_full_reference PRIVATE spgemm_support)
+enable_project_warnings(prepare_full_reference)
+add_executable(full_reference_test tests/full_reference_test.cpp)
+target_link_libraries(full_reference_test PRIVATE spgemm_support)
+enable_project_warnings(full_reference_test)
+add_test(NAME full_reference COMMAND full_reference_test ${CMAKE_CURRENT_BINARY_DIR}/full-reference-test)
+# END full-reference-cache-v1
 
 add_library(spgemm_baseline_support STATIC
     src/baselines/spgemm_exchange.cpp

@@ -311,3 +311,13 @@ ctest --test-dir build -R '^benchmark_measurements$' --output-on-failure
 The offline campaign tests exercise all eight output contracts, repeated appends,
 idempotent exports, local-result isolation, configuration, input/schema checks and
 failed launch handling. Numerical MPI checks are separate from these fixture tests.
+
+Full numerical recovery supports `--full-cache DIR` (`full_cache` in configuration,
+with `validate: true`). Prepare the reference once with `prepare_full_reference`;
+missing or corrupt references fail without automatic recomputation. Small Full
+pilots do not use this cache. `recover_cresco_hv15r.py` prepares up to two shared
+references through `submit-references`, gates `submit-probe` on their completion,
+then gates `submit-remaining` on both numeric probes. The scratch directory can be
+selected with `prepare --reference-cache-dir DIR`. See the
+[Full cache format and costs](../docs/full-validation-cache.md) and
+[CRESCO recovery commands](../docs/cresco-hv15r-numeric-recovery.md).

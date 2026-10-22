@@ -86,9 +86,31 @@ with tempfile.TemporaryDirectory(prefix='hv15r-roundoff-') as tmp:
                     pass
                 else:
                     raise AssertionError('Legacy PASS above 1e-10 was silently reclassified')
+        if not partial:
+            cache = Path(tmp) / 'references'
+            generator = subprocess.run([str(args.build_dir / 'prepare_full_reference'),
+                '--matrix-a', str(data / (name + '-A.mtx')), '--matrix-b', str(data / (name + '-B.mtx')),
+                '--full-cache', str(cache)], text=True, capture_output=True, timeout=60)
+            assert generator.returncode == 0, generator.stdout + generator.stderr
+            cached_command = list(command)
+            cached_table = Path(tmp) / (str(index) + '-cached.tsv')
+            cached_command[cached_command.index('--results') + 1] = str(cached_table)
+            cached_command += ['--full-cache', str(cache)]
+            cached = subprocess.run(cached_command, text=True, capture_output=True, timeout=60)
+            assert cached.returncode == run.returncode, cached.stdout + cached.stderr
+            assert 'validation_reference_source=reused' in cached.stdout
+            assert 'validation_reference_build_seconds=0' in cached.stdout
+            with cached_table.open() as stream:
+                cached_row = next(csv.DictReader(stream, delimiter='\t'))
+            assert set(row) == set(cached_row), 'TSV schema changed'
+            for field in ['validation', 'max_abs_error', 'c_nnz', 'benchmark_protocol', 'repeats', 'trials'] + experiments.VALIDATION_FIELDS:
+                assert row[field] == cached_row[field], (field, row[field], cached_row[field])
+            for field in experiments.SAMPLE_FIELDS:
+                if field in row and field.endswith('_samples_seconds'):
+                    assert len(json.loads(row[field])) == len(json.loads(cached_row[field]))
         if name == zero_name:
             assert int(row['c_nnz']) == (1 if q == 1 else 0)
         elif variant.startswith('trident_'):
             assert float(row['max_abs_error']) == 1.0186340659856796e-10
         print(f'{name}: {variant}, {q*q} logical nodes: {status}', flush=True)
-print(f'PASS: {len(tests)} real-coordinate MPI runs and exact rational oracles')
+print(f'PASS: {len(tests)} uncached + 13 cached real-coordinate MPI runs and exact rational oracles')
