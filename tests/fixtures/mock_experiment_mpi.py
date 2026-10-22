@@ -80,6 +80,10 @@ row.update(rank_scalar_products=json.dumps([2] * ranks), scalar_products=2 * ran
            rank_work_cv=0, rank_work_max_over_mean=1, idle_ranks=0, result_finite=1)
 gflops = "compute_gflops" if trident else "compute_gflops_p90"
 row[gflops] = 2 * row["scalar_products"] / float(row["compute_p90_seconds"]) / 1e9
+if os.environ.get("MOCK_NUMERIC_BOUND") and row['validation'] == 'PASS':
+    row.update(validation_criterion='componentwise_dot_bound_v1', validation_max_error_ratio='0.1',
+               validation_rejected_coordinates='0', validation_reference_digits='64',
+               max_abs_error='2e-10')
 if failure == "sample_count":
     row["compute_samples_seconds"] = "[]"
 elif failure == "sample_nan":

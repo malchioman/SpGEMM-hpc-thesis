@@ -1,5 +1,11 @@
 # Cache persistente della validazione parziale
 
+Per i casi con `PARTIAL_FAIL` dovuto a possibili cancellazioni numeriche, vedere
+[il recupero mirato di HV15R con controllo numerico completo](cresco-hv15r-numeric-recovery.md).
+Il percorso Full ora usa un riferimento riga per riga e un
+[limite numerico di arrotondamento esplicito](numerical-validation.md);
+il comportamento Partial descritto qui rimane invariato.
+
 La cache riutilizza il riferimento sequenziale, **mai un esito PASS**. Le otto
 implementazioni continuano a verificare dimensioni, finitezza dei valori del loro
 risultato e numero di non zeri per riga. `--partial` non confronta tutte le colonne

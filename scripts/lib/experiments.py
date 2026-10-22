@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import csv
+from decimal import Decimal, InvalidOperation
 import json
 import math
 import os
@@ -51,9 +52,19 @@ RANK_ARRAYS = ["rank_a_nnz", "rank_b_nnz", "rank_c_nnz", "rank_scalar_products"]
 WORK_METRICS = ["scalar_products", "rank_work_min", "rank_work_max", "rank_work_mean",
                 "rank_work_stddev", "rank_work_cv", "rank_work_max_over_mean", "idle_ranks"]
 METRIC_FIELDS = ROW_METRICS + RANK_ARRAYS + WORK_METRICS + ["result_finite"]
-PHASE_FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation"] + SAMPLE_FIELDS + METRIC_FIELDS
-FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation", "compute_gflops_p90"] + SAMPLE_FIELDS + METRIC_FIELDS
+VALIDATION_FIELDS = ["validation_criterion", "validation_max_error_ratio",
+                     "validation_rejected_coordinates", "validation_reference_digits"]
+PHASE_FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation"] + SAMPLE_FIELDS + METRIC_FIELDS + VALIDATION_FIELDS
+FIELDS = IDENTITY + TIMINGS + ["max_abs_error", "validation", "compute_gflops_p90"] + SAMPLE_FIELDS + METRIC_FIELDS + VALIDATION_FIELDS
 STRUCTURE_FIELDS = FIELDS + ["a_density", "b_density", "c_density"]
+
+
+def legacy_validation_metadata(row):
+    """Old files retain their original, stricter absolute criterion; never relabel them."""
+    return dict(validation_criterion="legacy_absolute_v1" if row.get("validation") in ("PASS", "FAIL") else
+                "row_nnz_exact_v1" if row.get("validation", "").startswith("PARTIAL_") else "none",
+                validation_max_error_ratio="NA", validation_rejected_coordinates="NA",
+                validation_reference_digits="NA")
 
 
 def repo_path(value):
@@ -245,11 +256,15 @@ def read_table(path, fields):
         return []
     with path.open(newline="", encoding="utf-8") as stream:
         reader = csv.DictReader(stream, delimiter="\t")
-        if reader.fieldnames != fields:
+        legacy = reader.fieldnames == [f for f in fields if f not in VALIDATION_FIELDS] and reader.fieldnames != fields
+        if reader.fieldnames != fields and not legacy:
             raise ValueError("Incompatible TSV header: " + str(path))
         rows = list(reader)
         if any(None in row or any(v in (None, "") for v in row.values()) for row in rows):
             raise ValueError("Incomplete TSV row: " + str(path))
+        if legacy:
+            for row in rows:
+                row.update(legacy_validation_metadata(row))
     # Appending after a partial last line would corrupt the next observation.
     with path.open("rb") as stream:
         stream.seek(-1, os.SEEK_END)
@@ -262,6 +277,10 @@ def write_table(path, fields, rows, append=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     if append:
         new = not path.exists()
+        if not new:
+            with path.open(newline="", encoding="utf-8") as existing:
+                if next(csv.reader(existing, delimiter="\t"), None) != fields:
+                    raise ValueError("Cannot append a new schema to an old TSV; choose a new results path")
         with path.open("a", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", lineterminator="\n")
             if new:
@@ -378,10 +397,24 @@ def validate_measurements(row, trident):
     if row["validation"] not in ("PASS", "PARTIAL_PASS", "SKIPPED") or row["result_finite"] != "1":
         raise ValueError("Failed validation or non-finite product")
     if validate:
-        if not 0 <= float(row["max_abs_error"]) < 1e-10:
+        error = float(row["max_abs_error"])
+        criterion = row.get("validation_criterion", "legacy_absolute_v1")
+        if criterion == "componentwise_dot_bound_v1":
+            try:
+                ratio = Decimal(row["validation_max_error_ratio"])
+            except InvalidOperation as exception:
+                raise ValueError("Invalid numerical error ratio") from exception
+            if (not math.isfinite(error) or error < 0 or not ratio.is_finite() or not 0 <= ratio <= 1 or
+                    row["validation_rejected_coordinates"] != "0" or int(row["validation_reference_digits"]) < 53):
+                raise ValueError("PASS disagrees with the componentwise numerical bound")
+        elif criterion != "legacy_absolute_v1" or not 0 <= error < 1e-10:
             raise ValueError("PASS disagrees with the numerical validation error")
     elif row["max_abs_error"] != "NA":
         raise ValueError("Partial or skipped validation must have max_abs_error=NA")
+    if not validate and "validation_criterion" in row:
+        expected_criterion = "row_nnz_exact_v1" if row["validation"] == "PARTIAL_PASS" else "none"
+        if row["validation_criterion"] != expected_criterion or any(row[f] != "NA" for f in VALIDATION_FIELDS[1:]):
+            raise ValueError("Invalid partial/skipped validation metadata")
     for key in ("a_rows", "a_cols", "b_rows", "b_cols", "ranks", "repeats", "trials"):
         if int(row[key]) < 1:
             raise ValueError("Invalid positive count: " + key)
@@ -433,6 +466,11 @@ def normalize(cfg, action, case, variant, nodes, raw_path, headers):
     if len(rows) != 1 or None in rows[0] or any(v is None for v in rows[0].values()):
         raise ValueError("Expected exactly one complete benchmark observation")
     row = rows[0]
+    present_validation = set(row).intersection(VALIDATION_FIELDS)
+    if present_validation and present_validation != set(VALIDATION_FIELDS):
+        raise ValueError("Incomplete numerical validation metadata")
+    if not present_validation:
+        row.update(legacy_validation_metadata(row))
     _, _, a, b = case
     _, warmup, repeats, trials, validate = sampling(cfg, action)
     trident = variant.startswith("trident_")

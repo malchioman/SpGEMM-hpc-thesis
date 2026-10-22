@@ -233,6 +233,10 @@ int runBenchmark(int argc, char** argv, const BenchmarkBackend& backend) {
                 {"full_product_seconds", number(fullProductSeconds)},
                 {"first_gather_seconds", number(firstGatherSeconds)}};
             record.insert(record.end(), metrics.begin(), metrics.end());
+            // BEGIN roundoff-validation-metadata-v1
+            const auto validationFields = validationMetadata(validation);
+            record.insert(record.end(), validationFields.begin(), validationFields.end());
+            // END roundoff-validation-metadata-v1
             writeRecord(record, options.resultsPath);
             for (const auto& field : record) std::cout << field.first << '=' << field.second << '\n';
             std::cout << "A=" << shape[0] << 'x' << shape[1] << " nnz=" << globalA.values.size() << '\n'

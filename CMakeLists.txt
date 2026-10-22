@@ -169,6 +169,10 @@ target_link_libraries(spgemm_options_smoke PRIVATE spgemm_support)
 enable_project_warnings(spgemm_options_smoke)
 
 enable_testing()
+add_executable(spgemm_full_streaming tests/spgemm_full_streaming.cpp)
+target_link_libraries(spgemm_full_streaming PRIVATE spgemm_support)
+enable_project_warnings(spgemm_full_streaming)
+add_test(NAME spgemm_full_streaming COMMAND spgemm_full_streaming)
 add_executable(partial_reference_test tests/partial_reference_test.cpp)
 target_link_libraries(partial_reference_test PRIVATE spgemm_support)
 enable_project_warnings(partial_reference_test)
@@ -384,6 +388,14 @@ include(tests/trident_tests.cmake)
 # Optional Python tooling tests; building/running the C++ benchmarks does not require Python.
 find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME full_streaming_mpi
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/full_streaming_mpi_test.py
+                --build-dir ${CMAKE_CURRENT_BINARY_DIR} --mpi-launcher ${MPIEXEC_EXECUTABLE})
+    set_tests_properties(full_streaming_mpi PROPERTIES TIMEOUT 180 PROCESSORS 8)
+    add_test(NAME full_roundoff_hv15r
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/full_roundoff_hv15r_test.py
+                --build-dir ${CMAKE_CURRENT_BINARY_DIR} --mpi-launcher ${MPIEXEC_EXECUTABLE})
+    set_tests_properties(full_roundoff_hv15r PROPERTIES TIMEOUT 300 PROCESSORS 32)
     add_test(NAME partial_cache_mpi
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/partial_cache_mpi_test.py
                 --build-dir ${CMAKE_CURRENT_BINARY_DIR} --mpi-launcher ${MPIEXEC_EXECUTABLE})

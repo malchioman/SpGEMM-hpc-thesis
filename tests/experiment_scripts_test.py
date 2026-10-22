@@ -23,6 +23,31 @@ import prepare_sbatchman as planner  # runner adds scripts/ to the import path
 
 
 class CampaignTest(unittest.TestCase):
+    def test_roundoff_ratio_is_not_rounded_down_into_an_accepted_value(self):
+        self.run_action('strong_scaling', '--variants', 'trident_get')
+        row = self.rows('strong_scaling')[0]
+        row.update(validation='PASS', validation_criterion='componentwise_dot_bound_v1', validation_max_error_ratio='1',
+                   validation_rejected_coordinates='0', validation_reference_digits='64', max_abs_error='2e-10')
+        runner.validate_measurements(row, True)
+        for ratio in ('1.00000000000000000001', 'NaN', 'Infinity', '-1e-1000', 'invalid'):
+            with self.subTest(ratio=ratio), self.assertRaises(ValueError):
+                runner.validate_measurements(dict(row, validation_max_error_ratio=ratio), True)
+
+    def test_legacy_validation_schema_is_read_without_relabelling_or_mixed_append(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'legacy.tsv'
+            old_fields = ['validation', 'max_abs_error']
+            fields = old_fields + runner.VALIDATION_FIELDS
+            runner.write_table(path, old_fields, [dict(validation='PASS', max_abs_error='0')])
+            before = path.read_bytes()
+            row = runner.read_table(path, fields)[0]
+            self.assertEqual(row['validation_criterion'], 'legacy_absolute_v1')
+            self.assertEqual(row['validation_max_error_ratio'], 'NA')
+            self.assertEqual(path.read_bytes(), before)
+            with self.assertRaisesRegex(ValueError, 'Cannot append'):
+                runner.write_table(path, fields, [row], append=True)
+            self.assertEqual(path.read_bytes(), before)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="spgemm campaign ")
         self.addCleanup(self.temporary.cleanup)
