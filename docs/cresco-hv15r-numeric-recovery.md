@@ -68,7 +68,7 @@ con una nuova cache numerica, in una directory separata.
 
 ## Selezione e protezioni del recupero
 
-`scripts/recover_cresco_hv15r.py` richiede tutti gli 80 job originali in stato
+Nella modalità ordinaria, `scripts/recover_cresco_hv15r.py` richiede tutti gli 80 job originali in stato
 terminale, controllato con `sacct`; rifiuta stati attivi, ricevute incomplete o
 accounting mancante. Nessuna cancellazione, reset o invio viene effettuato da
 `prepare`. Richiede la versione di questo branch sul cluster: i comandi sotto
@@ -136,6 +136,68 @@ SBATCH
 
 Se la preparazione fallisce, conservare il log e la directory incompleta per
 diagnosi; non sovrascriverla o cancellare i risultati della campagna originale.
+
+## Anticipare riferimenti e prove mentre 100/121 nodi sono ancora in coda
+
+La modalità `prepare --early-probes` permette di anticipare build, riferimenti
+e prove preliminari, purché **tutti i dieci job originali a 4 nodi siano conclusi**.
+Non basta togliere la dipendenza Slurm alla preparazione ordinaria.
+I job della campagna originale continuano con i loro eseguibili congelati.
+
+Se la vecchia preparazione è ancora `PENDING`, dopo aver aggiornato il checkout
+si può sostituire soltanto quella con il seguente comando. Usare l'ID effettivo
+del job di preparazione da sostituire (nell'esempio `5487188`):
+
+```bash
+cd /lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis
+python3 scripts/start_cresco_hv15r_early.py \
+  --replace-prepare-job 5487188 \
+  --reference-cache-dir /lpor1/scratch_1/usr/malchiod/tirocinio-spgemm/full-validation-references/hv15r-roundoff-cached-v4
+```
+
+Il comando verifica hash e stato dei job a 4 nodi, una destinazione ancora libera,
+il nome e il proprietario della preparazione in attesa e la richiesta di risorse.
+Poi cancella **solo il job indicato, con filtro `--state=PENDING`**, e invia la
+preparazione anticipata senza dipendenze dalla campagna originale. Se la vecchia
+preparazione è nel frattempo partita o ha creato la destinazione, si ferma.
+La ricevuta in `hvfull-cached-early-control/submission.json` impedisce doppi invii.
+Aggiorna `hvfull-cached-prepare.jobid`, quindi i comandi di monitoraggio rimangono:
+
+```bash
+PARENT=/lpor1/store_0/usr/malchiod/tirocinio-spgemm
+JOB=$(cat "$PARENT/hvfull-cached-prepare.jobid")
+sacct -X -j "$JOB" --format=JobID,JobName,State,Elapsed,ExitCode
+if [ -f "$PARENT/hvfull-cached-prepare-$JOB.log" ]; then
+  tail -n 50 "$PARENT/hvfull-cached-prepare-$JOB.log"
+fi
+```
+
+La preparazione esegue build e test e invia automaticamente i due riferimenti
+numerici. Richiede comunque un'allocazione Slurm e non garantisce l'avvio
+immediato. Quando i riferimenti sono `READY`, si usa `submit-probe` come sotto.
+Le due prove restano separate a 4 nodi, hanno dieci campioni ciascuna e permettono
+di misurare la durata reale prima di decidere come raggruppare i recuperi.
+
+Il manifest preliminare protegge i risultati originali a 4 nodi e tutti i file
+congelati. Non legge né congela le tabelle ancora in scrittura degli altri nodi.
+Per questi ultimi prepara solo i possibili script, senza inviarli: `run` è
+limitato alle due prove e `submit-remaining` rimane bloccato. `status` mostra
+esplicitamente la fase preliminare.
+
+**Quando tutti gli 80 job originali saranno conclusi e le due prove saranno
+PASS**, aggiornare il piano con:
+
+```bash
+RECOVERY=/lpor1/store_0/usr/malchiod/tirocinio-spgemm/SpGEMM-hpc-thesis/results/tesi-006/hv15r-roundoff-cached-v4
+python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" finalize --root "$RECOVERY"
+```
+
+`finalize` rilegge i risultati ormai stabili, esclude i casi riusciti nel frattempo,
+conserva le due prove preliminari, congela gli hash di tutte le tabelle originali
+e rende definitivo il piano. Non ricompila, non rigenera riferimenti, non modifica
+i vecchi TSV e non invia job. È idempotente. La successiva modalità di invio va
+scelta dopo aver valutato i tempi delle prove: `submit-remaining` continua a
+inviare un job per combinazione, non un job raggruppato per numero di nodi.
 
 ## Preparazione dei due riferimenti condivisi
 
@@ -220,3 +282,11 @@ I test offline `python tests/cresco_hv15r_test.py` verificano selezione delle so
 prove mancanti, campioni, idempotenza, blocco su campagna attiva o prove preliminari
 fallite, dipendenze e conservazione dei TSV originali. Non dimostrano prestazioni
 o correttezza numerica dell'intero HV15R sul cluster.
+
+L'estensione per le prove anticipate supera **17/17 test offline del recupero**
+e **6/6 del comando di sostituzione della preparazione**, oltre ai 21 test del
+runner. Sono verificati: altri nodi ancora attivi, immutabilità dei dati a 4 nodi,
+blocco degli invii prematuri, selezione finale aggiornata, conservazione dei
+campioni preliminari, assenza di ricompilazione durante `finalize`, doppio invio,
+ID/nome/proprietario errati e preparazione che parte durante la sostituzione.
+I comandi Slurm di questi test sono simulati; nessun job reale è stato inviato.
