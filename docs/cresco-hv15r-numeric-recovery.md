@@ -311,6 +311,45 @@ Non viene effettuato un rilancio automatico. I log sono in
 dei singoli lanci completati. Questi tempi sono durate operative e non sostituiscono
 i timer scientifici nei TSV.
 
+### Recupero del blocco n100-b08 interrotto all'avvio
+
+L'audit della campagna ha individuato 162/184 osservazioni accettate a 100 nodi:
+dieci casi HV15R già coperti dal recupero numerico e dodici ulteriori casi del
+blocco `n100-b08` (job 5472584, fallito dopo nove secondi, senza report dei nodi).
+Questi ultimi sono le permutazioni di dielFilterV3real, cage15 e archaea per
+Hybrid, GET, GET Pipeline e PUT. La causa dell'uscita non è determinata dai log
+disponibili. Il campo `Reason` di `sacct` conserva l'ultimo motivo di attesa,
+quindi `QOSMaxNodePerUserLimit` non prova che il limite QoS abbia terminato il job.
+
+Per includere anche questi casi **prima di congelare il piano raggruppato**:
+
+```bash
+python3 "$RECOVERY/metadata/source/scripts/recover_cresco_hv15r.py" finalize --root "$RECOVERY" &&
+python3 "$REPO/scripts/group_cresco_hv15r.py" prepare --root "$RECOVERY" --include-n100-b08
+```
+
+L'opzione verifica quali dei dodici candidati non sono già accettati e li
+aggiunge alla stessa allocazione da 100 nodi. Con i dati dell'audit quel job
+esegue 22 prove, mentre gli altri gruppi conservano il loro piano. Non vengono
+rilanciati i 162 risultati acquisiti né i preliminari riusciti. Un piano
+raggruppato già congelato senza l'opzione viene rifiutato, senza modificarlo o
+inviare job: prima bisogna verificare le eventuali ricevute di invio.
+
+Le dodici prove usano i binari congelati e la cache **parziale della campagna
+originale**, con la stessa configurazione scientifica e dieci campioni. I pilot
+cage8 Full e parziale rimangono obbligatori e separati dalle misure principali.
+Non richiedono nuovi riferimenti numerici o una ricompilazione. I risultati
+aggiuntivi sono salvati in `additional-cached/n100/permutation/trident_*.tsv`
+all'interno del recupero, con `PARTIAL_PASS`; le prove HV15R continuano a usare
+la validazione numerica Full e le directory del recupero già definite. Il monitor
+originale rimarrà a 162/184, perché le sue tabelle sono immutabili: il completamento
+si verifica combinando originali e recuperi senza duplicati.
+
+Il tempo stimato per dieci prove HV15R non comprende queste dodici prove
+aggiuntive. Il limite rimane 24 ore, senza una garanzia preventiva sulla durata
+del gruppo esteso. Ogni osservazione accettata viene salvata prima di passare
+alla successiva, anche se una prova successiva fallisce o il job viene interrotto.
+
 ## Dati per l'analisi
 
 I nuovi TSV sono in `hv15r-roundoff-cached-v4/nN/strong_scaling/trident_*.tsv` e
@@ -356,3 +395,11 @@ conservazione delle prove preliminari e dei dieci campioni, invii idempotenti,
 protezione da invii singoli concorrenti, prosecuzione dopo un caso fallito,
 conservazione dei risultati dopo un'interruzione e avvio del job prima della
 pubblicazione della ricevuta di invio. Non sono stati ricompilati i binari numerici.
+
+Con l'estensione `--include-n100-b08` passano **18/18 test offline**. I nuovi
+test verificano i dodici candidati esatti,
+il salto dei risultati originali già accettati, l'allocazione unica da 100 nodi,
+binari/cache/configurazione originali, dieci campioni e `PARTIAL_PASS`, esecuzione
+del runner congelato in un processo isolato, conservazione dei risultati dopo
+un fallimento, ricevute e configurazioni incompatibili. Anche questi test usano
+uno scheduler simulato e piccoli input; non prevedono il tempo su CRESCO.

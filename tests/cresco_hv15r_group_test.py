@@ -1,6 +1,7 @@
 """Offline grouped recovery: frozen per-case runner, fake scheduler and tiny MPI fixtures."""
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -43,17 +44,43 @@ class GroupedTest(unittest.TestCase):
         previous = grouped.subprocess.run
         self.case_launches = []
         def command(cmd, **kwargs):
-            if len(cmd) > 2 and cmd[1] == str(self.root / 'metadata/source/scripts/recover_cresco_hv15r.py'):
+            if len(cmd) > 2 and cmd[1] in (str(self.root / 'metadata/source/scripts/recover_cresco_hv15r.py'),
+                                         str(self.root / 'grouped/metadata/driver.py')):
                 key = cmd[cmd.index('--key') + 1]
                 self.case_launches.append(key)
                 if key == interrupt:
                     raise OSError('simulated interruption')
                 if key == fail:
                     return subprocess.CompletedProcess(cmd, 1)
-                recovery.run(self.root, key)
+                if cmd[2] == 'run-cached':
+                    grouped.run_cached(self.root, key)
+                else:
+                    recovery.run(self.root, key)
                 return subprocess.CompletedProcess(cmd, 0)
             return previous(cmd, **kwargs)
         return patch.object(grouped.subprocess, 'run', side_effect=command)
+
+    def partial_references(self):
+        manifest = ten.read(self.campaign / 'manifest.json')
+        cache = Path(manifest['partial_cache'])
+        cache.mkdir(exist_ok=True)
+        for pair in manifest['reference_pairs']:
+            key = '%064x' % pair['index']
+            (cache / (key + '.spref')).write_bytes(b'fixture')
+            ten.write(self.campaign / 'reference-ready' / ('%02d.json' % pair['index']),
+                      dict(pair=pair, key=key,
+                           generator_sha256=manifest['sha256']['metadata/bin/prepare_partial_reference']))
+
+    def prepare_additional(self):
+        self.partial_references()
+        with contextlib.redirect_stdout(io.StringIO()):
+            grouped.prepare(self.root, include_n100_b08=True)
+            grouped.submit(self.root)
+
+    def n100_env(self):
+        receipt = ten.read(self.root / 'grouped/submission/n100.json')
+        return dict(SLURM_JOB_ID=receipt['job_id'], SLURM_JOB_NUM_NODES='100',
+                    SLURM_NTASKS='200', SLURM_TASKS_PER_NODE='2(x100)')
 
     def test_plan_skips_probes_preserves_snapshot_resources_and_has_no_dependencies(self):
         self.prepare_submit()
@@ -213,6 +240,139 @@ class GroupedTest(unittest.TestCase):
             grouped.submit(self.root)
         with self.assertRaisesRegex(ValueError, 'Ambiguous prior submission'):
             recovery.submit(self.root, remaining=True)
+
+    def test_additional_scope_is_twelve_cases_in_the_same_n100_allocation(self):
+        self.prepare_additional()
+        _, plan, _, jobs = grouped.verify(self.root)
+        extra = plan['additional_cases']
+        self.assertEqual(len(extra), 12)
+        self.assertEqual({j['name'] for j in extra}, {'dielFilterV3real', 'cage15', 'archaea'})
+        self.assertEqual({j['variant'] for j in extra}, set(ten.VARIANTS[4:]))
+        self.assertTrue(all(j['nodes'] == 100 and j['action'] == 'permutation' for j in extra))
+        group = next(g for g in plan['groups'] if g['nodes'] == 100)
+        self.assertEqual(len(group['cases']), 22)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ['sbatch', '--parsable']]), 8)
+        source_cfg = ten.read(self.campaign / 'metadata/n100.json')
+        cfg = ten.read(self.root / 'grouped/metadata/cached-n100.json')
+        self.assertEqual(cfg, dict(source_cfg, results_dir=str(self.root / 'additional-cached/n100')))
+        self.assertNotEqual(cfg['build_dir'], str(self.root / 'metadata/bin'))
+        for key in group['cases']:
+            self.assertEqual(ten.read(self.root / 'submission' / (key + '.json'))['group'], 'n100')
+        with contextlib.redirect_stdout(io.StringIO()):
+            grouped.prepare(self.root, include_n100_b08=True)
+            grouped.submit(self.root)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ['sbatch', '--parsable']]), 8)
+        self.assertEqual((self.root / 'manifest.json').read_bytes(), self.parent_bytes)
+
+    def test_additional_execution_keeps_original_binary_cache_and_ten_samples(self):
+        self.prepare_additional()
+        with self.fake_cases(), patch.dict(os.environ, self.n100_env()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(grouped.run(self.root, 100))
+            self.assertEqual(len(self.case_launches), 22)
+            before = self.log.read_bytes()
+            self.assertTrue(grouped.run(self.root, 100))
+            self.assertEqual(len(self.case_launches), 22)
+        self.assertEqual(self.log.read_bytes(), before)
+        source_cfg = ten.read(self.campaign / 'metadata/n100.json')
+        commands = [json.loads(line) for line in self.log.read_text().splitlines()]
+        extra = [c for c in commands if '--partial' in c and c[c.index('--experiment') + 1] == 'permutation']
+        self.assertEqual(len(extra), 12)
+        for cmd in extra:
+            self.assertTrue(any(str(Path(source_cfg['build_dir']) / v) in cmd for v in ten.VARIANTS[4:]))
+            self.assertEqual(cmd[cmd.index('--partial-cache') + 1], source_cfg['partial_cache'])
+            self.assertEqual(cmd[cmd.index('--repeats') + 1], '10')
+            self.assertNotIn('--full-cache', cmd)
+        base, e = ten.runtime(self.campaign)
+        for variant in ten.VARIANTS[4:]:
+            rows = e.read_table(self.root / 'additional-cached/n100/permutation' / (variant + '.tsv'), e.FIELDS)
+            self.assertEqual(len(rows), 3)
+            self.assertTrue(all(r['validation'] == 'PARTIAL_PASS' and r['repeats'] == '10' for r in rows))
+        self.assertEqual(recovery.result_snapshot(self.campaign), {})
+        self.assertEqual((self.campaign / 'manifest.json').read_bytes(), self.original_manifest)
+        self.assertEqual((self.root / 'manifest.json').read_bytes(), self.parent_bytes)
+        self.assertEqual({p: p.read_bytes() for p in self.probes}, self.probes)
+
+    def test_already_accepted_original_case_is_excluded_from_additional_plan(self):
+        base, e = ten.runtime(self.campaign)
+        cfg = e.options(['permutation', '--config', str(self.campaign / 'metadata/n100.json'),
+                         '--variants', 'trident_hybrid'])
+        case = next(c for c in e.cases(cfg, 'permutation') if c[0] == 'cage15')
+        with contextlib.redirect_stdout(io.StringIO()):
+            ten.perform(base, e, cfg, 'permutation', [case])
+        snapshot = recovery.result_snapshot(self.campaign)
+        parent = ten.read(self.root / 'manifest.json')
+        parent['source_results_sha256'] = snapshot
+        ten.write(self.root / 'manifest.json', parent)
+        self.prepare_additional()
+        _, plan, _, _ = grouped.verify(self.root)
+        self.assertEqual(len(plan['additional_cases']), 11)
+        self.assertFalse(any(j['name'] == 'cage15' and j['variant'] == 'trident_hybrid'
+                             for j in plan['additional_cases']))
+        self.assertEqual(recovery.result_snapshot(self.campaign), snapshot)
+
+    def test_additional_failure_never_becomes_accepted_and_preserves_previous_row(self):
+        self.prepare_additional()
+        _, plan, _, _ = grouped.verify(self.root)
+        extra = [j for j in plan['additional_cases'] if j['variant'] == 'trident_get']
+        with patch.dict(os.environ, self.n100_env()), contextlib.redirect_stdout(io.StringIO()):
+            grouped.run_cached(self.root, extra[0]['key'])
+            table = self.root / 'additional-cached/n100/permutation/trident_get.tsv'
+            saved = table.read_bytes()
+            with patch.dict(os.environ, MOCK_FAILURE='validation'), self.assertRaises(RuntimeError):
+                grouped.run_cached(self.root, extra[1]['key'])
+        self.assertEqual(table.read_bytes(), saved)
+        self.assertFalse(grouped.complete(recovery, self.root, self.campaign, extra[1]))
+        with patch.dict(os.environ, SLURM_JOB_ID='999'), self.assertRaisesRegex(ValueError, 'recorded grouped'):
+            grouped.run_cached(self.root, extra[1]['key'])
+
+    def test_frozen_additional_runner_works_in_an_isolated_process(self):
+        self.prepare_additional()
+        job = grouped.verify(self.root)[1]['additional_cases'][0]
+        code = '''
+import importlib.util
+import pathlib
+import subprocess
+import sys
+from unittest.mock import patch
+root = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location('driver', root / 'grouped/metadata/driver.py')
+driver = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(driver)
+real_run = subprocess.run
+def scheduler(cmd, **kwargs):
+    if cmd[0] == 'sacct':
+        ids = cmd[cmd.index('-j') + 1].split(',')
+        return subprocess.CompletedProcess(cmd, 0, stdout=''.join(i + '|COMPLETED|\\n' for i in ids))
+    return real_run(cmd, **kwargs)
+with patch.object(subprocess, 'run', side_effect=scheduler):
+    driver.run_cached(root, sys.argv[2])
+'''
+        result = fixtures.REAL_RUN([sys.executable, '-c', code, str(self.root), job['key']],
+                                  env=dict(os.environ, **self.n100_env()), cwd=self.root,
+                                  capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(grouped.complete(recovery, self.root, self.campaign, job))
+
+    def test_existing_group_plan_cannot_be_silently_extended(self):
+        self.prepare_submit()
+        with self.assertRaisesRegex(ValueError, 'excludes n100-b08'):
+            grouped.prepare(self.root, include_n100_b08=True)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ['sbatch', '--parsable']]), 8)
+
+    def test_additional_configuration_and_reference_guards(self):
+        with self.assertRaisesRegex(ValueError, 'non preparato'):
+            grouped.prepare(self.root, include_n100_b08=True)
+        self.assertFalse((self.root / 'grouped').exists())
+        self.prepare_additional()
+        path = self.root / 'grouped/metadata/cached-n100.json'
+        cfg = ten.read(path)
+        cfg['repeats'] = 20
+        ten.write(path, cfg)
+        manifest = ten.read(self.root / 'grouped/manifest.json')
+        manifest['sha256']['metadata/cached-n100.json'] = ten.digest(path)
+        ten.write(self.root / 'grouped/manifest.json', manifest)
+        with self.assertRaisesRegex(ValueError, 'scientific configuration'):
+            grouped.verify(self.root)
 
 
 if __name__ == '__main__':
