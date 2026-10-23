@@ -90,11 +90,11 @@ def read_json(path):
         return json.load(stream)
 
 
-def options(argv=None):
+def options(argv=None, configuration=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=RUN_ACTIONS + ANALYSES + ("all",))
     parser.add_argument("campaign_count", nargs="?", type=int, metavar="N",
-                        help="all only: repeat the complete workflow N times (run_all.sh N)")
+                        help="all only: repeat the complete workflow N times")
     parser.add_argument("--campaign-repeats", type=int,
                         help="all only: complete workflow repetitions; alternative to positional N")
     parser.add_argument("--config", type=Path, default=REPO / "scripts/experiments.json")
@@ -117,9 +117,9 @@ def options(argv=None):
     if args.campaign_count is not None and args.campaign_repeats is not None:
         raise ValueError("Use either N or --campaign-repeats, not both")
     if args.action != "all" and (args.campaign_count is not None or args.campaign_repeats is not None):
-        raise ValueError("Campaign repetitions are only supported by run_all.sh (action all)")
+        raise ValueError("Campaign repetitions are only supported by action all")
     defaults = read_json(REPO / "scripts/experiments.json")
-    config = read_json(args.config)
+    config = read_json(args.config) if configuration is None else dict(configuration)
     unknown = set(config) - set(defaults)
     if unknown:
         raise ValueError("Unknown configuration keys: " + ", ".join(sorted(unknown)))
@@ -299,6 +299,8 @@ def write_table(path, fields, rows, append=False):
             writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):

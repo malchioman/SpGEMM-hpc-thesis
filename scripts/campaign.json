@@ -1,0 +1,34 @@
+{
+  "experiment": {
+    "nodes": [1, 4, 9, 16, 36, 64, 100, 121],
+    "ranks_per_node": 2,
+    "threads": 63,
+    "cpus_per_rank": 64,
+    "runs": 1,
+    "campaign_repeats": 1,
+    "warmup": 0,
+    "repeats": 10,
+    "trials": 1,
+    "schedule": "guided",
+    "chunk": 64,
+    "seed": 42,
+    "matrices": ["all"],
+    "pilot_matrices": ["cage8"],
+    "permutation_matrices": ["HV15R", "dielFilterV3real", "cage15", "archaea"],
+    "mpi_args": ["--mca", "btl_vader_single_copy_mechanism", "none"],
+    "timeout": 0
+  },
+  "excluded_pairs": [["reddit.mtx", "reddit.mtx"]],
+  "cases_per_job": 24,
+  "reference_parallelism": 4,
+  "slurm": {
+    "partition": "cresco8_cpu",
+    "time": "24:00:00",
+    "memory": "450000M",
+    "exclusive": true,
+    "preamble": [
+      "source /usr/share/Modules/init/bash",
+      "module load intel/oneapi mpi_flavour/openmpi_intel-4.1.7"
+    ]
+  }
+}
