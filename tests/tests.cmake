@@ -277,6 +277,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME experiment_scripts
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/experiment_scripts_test.py)
     set_tests_properties(experiment_scripts PROPERTIES TIMEOUT 240)
+    add_test(NAME cresco_export
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cresco_export_test.py)
+    set_tests_properties(cresco_export PROPERTIES TIMEOUT 60)
     add_test(NAME campaign
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/campaign_test.py)
     set_tests_properties(campaign PROPERTIES TIMEOUT 120)
