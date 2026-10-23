@@ -19,3 +19,6 @@ scripts/sbatchman/*.local.json
 *.o
 *.obj
 *.exe
+
+# Campaign snapshots, measurements and reference caches.
+/results/

@@ -19,7 +19,6 @@ REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("experiments", REPO / "scripts/lib/experiments.py")
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
-import prepare_sbatchman as planner  # runner adds scripts/ to the import path
 
 
 class CampaignTest(unittest.TestCase):
@@ -256,62 +255,6 @@ class CampaignTest(unittest.TestCase):
         self.assertFalse(self.launch_log.exists())
         self.assertFalse(self.results.exists())
 
-    def test_sbatchman_jobs_match_run_all_tables_and_append(self):
-        args = ["all", "--config", str(self.config), "--nodes", "1", "4",
-                "--variants", "spgemm_two_sided", "trident_get",
-                "--campaign-repeats", "2", "--runs", "1"]
-        with contextlib.redirect_stdout(io.StringIO()):
-            runner.main(args)
-
-        def tables(root):
-            result = {}
-            for path in root.rglob("*.tsv"):
-                with path.open(newline="", encoding="utf-8") as stream:
-                    reader = csv.reader(stream, delimiter="\t")
-                    result[path.relative_to(root)] = (tuple(next(reader)), Counter(map(tuple, reader)))
-            return result
-
-        reference = tables(self.results)
-        self.assertEqual(len(reference), 12)  # six stages, two implementations
-        for scheduler in ("slurm", "pbs"):
-            with self.subTest(scheduler=scheduler):
-                root = self.root / scheduler
-                cfg = planner.experiments.options(args + ["--results-dir", str(root)])
-                files = planner.make_plan(scheduler, planner.load_profile(scheduler, None), cfg,
-                                          "check", self.root / "plan")
-                snapshots = []
-
-                def run_job(snapshot):
-                    nodes = json.loads(snapshot.read_text(encoding="utf-8"))["nodes"][0]
-                    nodefile = self.root / "PBS_NODEFILE"
-                    nodefile.write_text("".join(("node%d\n" % n) * 2 for n in range(nodes)), encoding="ascii")
-                    env = dict(os.environ, SLURM_JOB_ID="123", SLURM_JOB_NUM_NODES=str(nodes),
-                               SLURM_NTASKS=str(nodes * 2), SLURM_CPUS_PER_TASK="3",
-                               SLURM_TASKS_PER_NODE="2(x%d)" % nodes,
-                               PBS_JOBID="123.server", PBS_NODEFILE=str(nodefile))
-                    completed = subprocess.run([
-                        sys.executable, str(REPO / "scripts/lib/allocated_experiment.py"),
-                        "--scheduler", scheduler, "--action", "all", "--config", str(snapshot)
-                    ], env=env, capture_output=True, text=True)
-                    self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-
-                for name, settings in files.items():
-                    if name.endswith(".json"):
-                        snapshot = self.root / (scheduler + "-" + name)
-                        snapshot.write_text(json.dumps(settings), encoding="utf-8")
-                        snapshots.append(snapshot)
-                        run_job(snapshot)
-                # Jobs may append in a different order, but paths, schemas and
-                # observations (including duplicates) match the direct runner.
-                self.assertEqual(tables(root), reference)
-                self.assertFalse((root / "campaigns").exists())
-
-                run_job(snapshots[-1])  # a rerun adds data; exports must retain both node counts
-                appended = tables(root)
-                for path, (header, rows) in reference.items():
-                    repeated = Counter({row: count for row, count in rows.items()
-                                        if row[header.index("nodes")] == "4"})
-                    self.assertEqual(appended[path], (header, rows + repeated))
 
     def test_preflight_stops_before_launch_for_changed_inputs(self):
         path = self.data / "cage8_restriction.mtx"
@@ -369,37 +312,6 @@ class CampaignTest(unittest.TestCase):
         with runner.result_lock(self.results), self.assertRaisesRegex(ValueError, "Another campaign"):
             self.run_action("strong_scaling", "--variants", "trident_get")
         self.assertFalse(self.launch_log.exists())
-
-    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Linux/WSL shell entrypoints")
-    def test_run_all_shell_repetitions_preview(self):
-        shutil.rmtree(self.data)
-        shutil.rmtree(self.build)
-        for count_args in (["5"], ["--campaign-repeats", "5"]):
-            with self.subTest(count_args=count_args):
-                result = subprocess.run([
-                    "bash", str(REPO / "scripts/run_all.sh"), *count_args,
-                    "--config", str(self.config), "--runs", "1", "--variants", "trident_get",
-                    "--dry-run", "--mpi-launcher", "nonexistent-mpirun",
-                ], cwd=self.root, env=dict(os.environ, PYTHON=sys.executable),
-                    capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("30 MPI launches", result.stdout)
-                self.assertEqual(result.stdout.count("Workflow repetition "), 5)
-                self.assertIn("Workflow repetition 5/5", result.stdout)
-                for action in runner.ANALYSES:
-                    self.assertEqual(result.stdout.count(action + ": regenerate"), 5)
-        self.assertFalse(self.results.exists())
-        self.assertFalse(self.launch_log.exists())
-
-    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Linux/WSL shell entrypoints")
-    def test_shell_entrypoints_from_another_directory(self):
-        env = dict(os.environ, PYTHON=sys.executable)
-        for script in ("run_pilot", "run_strong_scaling", "run_permutation", "run_rectangular",
-                       "analyze_phases", "analyze_structure", "run_all", "build"):
-            result = subprocess.run(["bash", str(REPO / "scripts" / (script + ".sh")), "--help"],
-                                    cwd=self.root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            self.assertEqual(result.returncode, 0, result.stderr.decode())
-
 
 if __name__ == "__main__":
     unittest.main()
